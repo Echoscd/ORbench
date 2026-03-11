@@ -1,0 +1,33 @@
+{
+  "bellman_ford_sample_0": {
+    "task_id": "bellman_ford",
+    "sample_id": 0,
+    "compiled": true,
+    "compile_error": "",
+    "correct": true,
+    "correctness_detail": {
+      "small": true
+    },
+    "benchmark": {
+      "e2e_time_ms": {
+        "mean": 10.423,
+        "std": 0.0,
+        "min": 10.423,
+        "max": 10.423,
+        "num_trials": 1
+      },
+      "kernel_time_ms": null,
+      "gpu_utilization": null,
+      "num_kernel_launches": null,
+      "memcpy_overhead_ms": null,
+      "nsys_csv_path": null,
+      "cpu_baseline_ms": 10.627,
+      "speedup_e2e": 1.0195721001631008,
+      "speedup_kernel": null,
+      "hardware": "NVIDIA L20X",
+      "device_id": 0,
+      "error": ""
+    },
+    "error": ""
+  }
+}

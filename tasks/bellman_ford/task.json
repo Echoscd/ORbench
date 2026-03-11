@@ -12,8 +12,7 @@
   },
 
   "correctness": {
-    "mode": "checksum",
-    "field": "cs",
+    "mode": "numerical",
     "atol": 0.1
   },
 

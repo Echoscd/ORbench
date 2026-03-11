@@ -75,19 +75,23 @@ def generate_graph_csr(V: int, E: int, seed: int):
 def compile_cpu_baseline(orbench_root: Path) -> Path:
     exe = orbench_root / "tasks" / "bellman_ford" / "solution_cpu"
     src = orbench_root / "tasks" / "bellman_ford" / "cpu_reference.c"
+    task_io_cpu = orbench_root / "tasks" / "bellman_ford" / "task_io_cpu.c"
     harness = orbench_root / "framework" / "harness_cpu.c"
-    # Simple cache: if exe exists and is newer than sources, reuse
+    # Simple cache: if exe exists and is newer than all sources, reuse
+    sources = [src, task_io_cpu, harness]
     if exe.exists():
         try:
             exe_m = exe.stat().st_mtime
-            if exe_m >= src.stat().st_mtime and exe_m >= harness.stat().st_mtime:
+            if all(exe_m >= s.stat().st_mtime for s in sources):
                 return exe
         except Exception:
             pass
+    # v2.1: three-file compilation  harness + task_io + cpu_reference
     cmd = [
         "gcc", "-O2",
         "-I", str(orbench_root / "framework"),
         str(harness),
+        str(task_io_cpu),
         str(src),
         "-o", str(exe),
         "-lm",

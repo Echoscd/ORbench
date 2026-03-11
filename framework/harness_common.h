@@ -1,7 +1,12 @@
-// harness_common.h - ORBench v2 request-based benchmark harness skeleton (C-only)
+// harness_common.h - ORBench v2.1 request-based benchmark harness skeleton (C-only)
 //
 // Included by both framework/harness_gpu.cu and framework/harness_cpu.c
 // so this file MUST be valid C (not C++).
+//
+// Three-layer architecture:
+//   harness (this file, generic)
+//     → task_io (task-specific I/O adapter, provided per task)
+//       → solution (LLM-written, pure computation, no I/O)
 
 #ifndef ORBENCH_HARNESS_COMMON_H
 #define ORBENCH_HARNESS_COMMON_H
@@ -12,25 +17,22 @@
 
 #include "orbench_io.h"
 
-// Framework-agnostic: no task-specific assumptions
-
-// Implemented by solution.cu / cpu_reference.c
-// Framework-agnostic interface: solution defines its own test data structure
+// Implemented by task_io layer (task_io.cu / task_io_cpu.c)
+// Framework-agnostic: harness knows nothing about task-specific data
 #ifdef __cplusplus
 extern "C" {
 #endif
-// solution_setup: Load input.bin and requests.txt, allocate memory, return test_data
-// test_data is task-specific and managed by solution
-extern void* solution_setup(const TaskData* data, const char* data_dir);
+// task_setup: Parse task-specific inputs (requests.txt etc.), call solution_init, return ctx
+extern void* task_setup(const TaskData* data, const char* data_dir);
 
-// solution_run: Execute the computation (timed region)
-extern void solution_run(void* test_data);
+// task_run: Call solution_compute (timed region)
+extern void  task_run(void* ctx);
 
-// solution_write_output: Write results to output.txt (task-specific format)
-extern void solution_write_output(void* test_data, const char* output_path);
+// task_write_output: Write results to output.txt (format controlled by task_io)
+extern void  task_write_output(void* ctx, const char* output_path);
 
-// solution_cleanup: Free all allocated resources
-extern void solution_cleanup(void* test_data);
+// task_cleanup: Call solution_free, free task_io resources
+extern void  task_cleanup(void* ctx);
 #ifdef __cplusplus
 }
 #endif
@@ -48,17 +50,17 @@ static int harness_main(int argc, char** argv) {
     snprintf(path, sizeof(path), "%s/input.bin", data_dir);
     TaskData data = load_input_bin(path);
 
-    // 2. Setup: solution loads requests.txt and allocates memory (not timed)
-    void* test_data = solution_setup(&data, data_dir);
-    if (!test_data) {
-        fprintf(stderr, "solution_setup failed\n");
+    // 2. Setup: task_io parses requests, calls solution_init (not timed)
+    void* ctx = task_setup(&data, data_dir);
+    if (!ctx) {
+        fprintf(stderr, "task_setup failed\n");
         free_task_data(&data);
         return 1;
     }
 
     // 3. Warmup (not timed)
     for (int w = 0; w < WARMUP; w++) {
-        solution_run(test_data);
+        task_run(ctx);
         SYNC();
     }
 
@@ -66,7 +68,7 @@ static int harness_main(int argc, char** argv) {
     float total_ms = 0.0f, min_ms = 1e9f, max_ms = 0.0f;
     for (int t = 0; t < NUM_TRIALS; t++) {
         TIMER_START();
-        solution_run(test_data);
+        task_run(ctx);
         SYNC();
         TIMER_STOP();
 
@@ -81,20 +83,18 @@ static int harness_main(int argc, char** argv) {
     fprintf(stderr, "Timing: mean=%.3f ms, min=%.3f ms, max=%.3f ms (%d trials)\n",
             mean_ms, min_ms, max_ms, NUM_TRIALS);
 
-    // 5. Validate: run once and write output.txt (task-specific format)
+    // 5. Validate: run once and write output.txt
     if (do_validate) {
-        solution_run(test_data);
+        task_run(ctx);
         SYNC();
         snprintf(path, sizeof(path), "%s/output.txt", data_dir);
-        solution_write_output(test_data, path);
+        task_write_output(ctx, path);
     }
 
     // 6. Cleanup
-    solution_cleanup(test_data);
+    task_cleanup(ctx);
     free_task_data(&data);
     return 0;
 }
 
 #endif // ORBENCH_HARNESS_COMMON_H
-
-

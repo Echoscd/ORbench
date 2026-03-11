@@ -1,89 +1,96 @@
-# ORBench v2 任务：Bellman-Ford SSSP（Request-Based GPU Service）
+# Bellman-Ford 单源最短路 — CUDA 优化
 
-你要实现的是 **GPU 版本的“服务式”最短路**：图只加载一次并常驻显存，然后处理多次查询（requests）。
+## 任务
 
-本任务不再使用 `LLM_input.cu` 模板，也不需要写 `main()`。你只需要提供 3 个函数（见下）。
+给定一个有向加权图（CSR 格式）和一批 `(source, target)` 查询，对每个查询计算从 `source` 到 `target` 的最短距离。
 
----
+请实现以下三个 `extern "C"` 函数（在一个 `.cu` 文件中）。**不需要** 写 `main()`、不读/写任何文件。
 
-## 输入数据布局（每个 size 一个目录）
-
-`tasks/bellman_ford/data/<size>/`
-
-- `input.bin`: 大输入（CSR 图结构），只在 `solution_setup()` 读入并 H2D（不计时）
-- `requests.txt`: N 行，每行一个查询（格式：`s t`，两个整数，空格分隔）
-- `expected_output.txt`: N 行，每行一个浮点数（s 到 t 的最短距离）
-- `cpu_time_ms.txt`: CPU baseline 处理全部 requests 的时间（毫秒）
-
----
-
-## 你需要实现的接口（只写这 3 个函数）
-
-在你的 `solution.cu` 中实现：
+## 你需要实现的函数
 
 ```c
-extern void solution_setup(const TaskData* data);
+// 1. 初始化：接收 host 端图数据指针，做 cudaMalloc + H2D 等
+//    只调用一次，不计时
+extern "C" void solution_init(
+    int V, int E,
+    const int*   h_row_offsets,   // host, (V+1) 个 int, CSR 行偏移
+    const int*   h_col_indices,   // host, E 个 int, CSR 列索引
+    const float* h_weights        // host, E 个 float, 边权（正数）
+);
 
-extern void solution_run(int num_requests, const char** requests,
-                         char** responses);
+// 2. 计算：处理一批查询，将结果写入 distances
+//    会被多次调用（warmup + 计时），必须幂等
+//    distances[i] = 从 sources[i] 到 targets[i] 的最短距离
+//    不可达时填 1e30f
+extern "C" void solution_compute(
+    int num_requests,
+    const int*   h_sources,       // host, num_requests 个 int
+    const int*   h_targets,       // host, num_requests 个 int
+    float*       h_distances      // host, num_requests 个 float (输出)
+);
 
-extern void solution_cleanup();
+// 3. 释放 GPU 资源
+//    只调用一次，不计时
+extern "C" void solution_free(void);
 ```
 
-其中 `TaskData` / `Tensor` 与辅助函数定义在 `framework/orbench_io.h`（C 头文件）：
+## 关键约束
 
-- `get_param(data, "V")`, `get_param(data, "E")`
-- `get_tensor_int(data, "row_offsets")`, `get_tensor_int(data, "col_indices")`
-- `get_tensor_float(data, "weights")`
+1. 三个函数都用 `extern "C"` 链接
+2. `solution_compute` 的所有参数都是 **host 指针**
+3. 你自己决定何时 H2D / D2H，是否用 pinned memory、streams 等
+4. **不要** 在 `solution_compute` 里做 `cudaMalloc`（它会被反复调用）
+5. 文件里 **不要** 出现 `fopen` / `fread` / `fwrite` / `fprintf` / `printf` 等 I/O 调用
 
-**关键约束：**
-- `solution_setup/cleanup` 不计时；计时区间只包含 `solution_run`。
-- `distances[i]` 是单个浮点数，表示从 `s` 到 `t` 的最短距离。
-- `solution_run` 会被 warmup 与 timed trials 多次调用，必须避免重复分配/重复 H2D。
+## 输入规模
 
----
+| 规模 | V | E | 查询数 |
+|------|---|---|--------|
+| small | 1,000 | 5,000 | 100 |
+| medium | 100,000 | 500,000 | 100 |
+| large | 500,000 | 2,500,000 | 100 |
 
-## request / response 格式
+查询中 `source` 分为 10 组（每组 10 个不同的 `source`，每个 `source` 配 10 个 `target`），共 100 条。
+同一个 `source` 的查询可以共享一次 Bellman-Ford 计算。
 
-### requests.txt（输入）
-每行一个 (s, t) 对，格式：`s t`（两个整数，空格分隔）
+## CPU 参考实现
 
+```c
+#define INF_VAL 1e30f
+
+void solution_compute(int num_requests,
+                      const int* sources, const int* targets,
+                      float* distances) {
+    float* dist_buf = (float*)malloc(V * sizeof(float));
+    for (int r = 0; r < num_requests; r++) {
+        int src = sources[r], tgt = targets[r];
+        for (int i = 0; i < V; i++) dist_buf[i] = INF_VAL;
+        dist_buf[src] = 0.0f;
+
+        for (int round = 0; round < V - 1; round++) {
+            int updated = 0;
+            for (int u = 0; u < V; u++) {
+                if (dist_buf[u] >= INF_VAL) continue;
+                for (int idx = row_offsets[u]; idx < row_offsets[u+1]; idx++) {
+                    float nd = dist_buf[u] + weights[idx];
+                    if (nd < dist_buf[col_indices[idx]]) {
+                        dist_buf[col_indices[idx]] = nd;
+                        updated = 1;
+                    }
+                }
+            }
+            if (!updated) break;
+        }
+        distances[r] = (tgt >= 0 && tgt < V) ? dist_buf[tgt] : INF_VAL;
+    }
+    free(dist_buf);
+}
 ```
-0 42
-10 99
-20 5
-```
 
-**说明**：s 分 10 组，每组 10 个不同的 s，每个 s 配 10 个不同的 t，共 100 条请求。
+## 优化提示
 
-### distances[i]（输出）
-**单个距离值**：s 到 t 的最短距离。
-
-- `distances[i]` 是一个 `float` 值
-- 表示从 `s` 到 `t` 的最短距离
-- 如果不可达，返回 `INF_VAL`（约 `1e30f`）
-- harness 会自动格式化为文本：`output.txt` 每行一个浮点数
-
-**重要**：不要计算整个距离数组、top-k、checksum 或手动格式化文本，这些会引入额外开销。只计算并返回 s 到 t 的距离值即可。
-
-校验模式由 `task.json` 定义：
-- `correctness.mode = "checksum"`
-- `correctness.field = "cs"`
-- `correctness.atol = 0.1`
-
----
-
-## 编译方式（供你本地自测）
-
-GPU solution：
-
-```bash
-nvcc -O2 -arch=sm_89 -I framework/ framework/harness_gpu.cu solution.cu -o solution_gpu
-./solution_gpu tasks/bellman_ford/data/large --validate
-```
-
----
-
-## 性能建议（L2，不给实现提示）
-
-目标是把 `solution_run()` 做到尽量薄：复用显存、批处理 requests、避免频繁 cudaMalloc/cudaFree、减少同步与 host-device 往返。
+- 将图数据 **一次性** 拷贝到 GPU（在 `solution_init` 里），后续查询复用
+- 同一个 `source` 的 10 个查询只需一次 Bellman-Ford，可在 `solution_compute` 里去重
+- 可用 edge-parallel 或 vertex-parallel 方案加速 relaxation
+- 利用 shared memory / warp-level primitives 加速
+- 用 early-exit 检测收敛

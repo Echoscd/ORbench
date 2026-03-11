@@ -8,7 +8,7 @@ import subprocess
 import shutil
 from dataclasses import dataclass
 
-from .task import load_task, ORBENCH_ROOT
+from .task import load_task, ORBENCH_ROOT, TASKS_DIR
 from .config import get_config
 
 
@@ -61,13 +61,15 @@ def compile_solution(
 
     exe_path = os.path.join(build_dir, "solution_gpu")
 
-    # ORBench v2 compilation: harness_gpu.cu + solution.cu
+    # ORBench v2.1 compilation: harness_gpu.cu + task_io.cu + solution.cu
     harness_path = os.path.join(ORBENCH_ROOT, "framework", "harness_gpu.cu")
+    task_io_path = os.path.join(TASKS_DIR, task_id, "task_io.cu")
     include_dir = os.path.join(ORBENCH_ROOT, "framework")
     cmd = [
         "nvcc", "-O2", f"-arch={arch}",
         "-I", include_dir,
         harness_path,
+        task_io_path,
         src_in_build,
         "-o", exe_path,
     ]
