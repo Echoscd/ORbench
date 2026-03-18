@@ -1,7 +1,7 @@
 // cpu_reference.c — bellman_ford CPU baseline
 //
-// Implements the three LLM-facing functions:
-//   solution_init / solution_compute / solution_free
+// Implements the two LLM-facing functions:
+//   solution_init / solution_compute
 //
 // NO file I/O here. All I/O is handled by task_io_cpu.c.
 //
@@ -68,6 +68,3 @@ void solution_compute(int num_requests,
     }
 }
 
-void solution_free(void) {
-    if (g_dist_buf) { free(g_dist_buf); g_dist_buf = NULL; }
-}

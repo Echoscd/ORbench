@@ -1,0 +1,130 @@
+# Airline Crew Pairing Optimization -- Prompt Template
+#
+# Used by framework/generate_prompt.py to assemble level-specific prompts.
+# The framework auto-injects: generic constraints, input sizes (from task.json),
+# and cpu_reference.c content.
+
+task_description: |
+  Given a set of airline flight legs with departure/arrival times, stations, and cost
+  rates, find an optimal **crew pairing** assignment that minimizes total cost while
+  satisfying all operational constraints.
+
+  Each flight leg has:
+  - Departure and arrival times (as minutes from an epoch)
+  - Departure and arrival station IDs (0-indexed integers)
+  - A base station ID (e.g., the airline's home hub)
+
+  A **pairing** is a sequence of flight legs assigned to a single crew. Legs within a
+  pairing are grouped into **duties** (work periods) separated by rest periods.
+
+  **Constraints per duty:**
+  - Maximum duty span: 14 hours (840 minutes)
+  - Maximum block (flight) time: 10 hours (600 minutes)
+  - Maximum legs per duty: 6
+  - Minimum rest between duties: 9 hours (540 minutes)
+  - Station continuity: each leg must depart from where the previous leg arrived
+
+  **Cost model:**
+  - `duty_hours * duty_cost_per_hour` (duty span = last arrival - first departure in duty)
+  - `block_hours * pairing_cost_per_hour` (block = sum of flight times)
+  - `$10,000` positioning fee if the first leg of a pairing departs from a non-base station
+
+  The goal is to **partition all legs into pairings** that **minimize total cost**.
+
+interface: |
+  ```c
+  // Called once before timing. Receive host-side flight leg data.
+  extern "C" void solution_init(
+      int N,                        // number of flight legs
+      int num_stations,             // number of unique stations
+      int base_station,             // station ID of the base (home hub)
+      const int* dep_minutes,       // host, N ints: departure time (minutes from epoch)
+      const int* arr_minutes,       // host, N ints: arrival time (minutes from epoch)
+      const int* dep_stations,      // host, N ints: departure station ID
+      const int* arr_stations,      // host, N ints: arrival station ID
+      float duty_cost_per_hour,     // cost rate for duty hours
+      float pairing_cost_per_hour,  // cost rate for block hours
+      int max_duty_min,             // 840 (14h)
+      int max_block_min,            // 600 (10h)
+      int max_legs_duty,            // 6
+      int min_rest_min              // 540 (9h)
+  );
+
+  // Called multiple times (warmup + timed). MUST be idempotent.
+  extern "C" void solution_compute(
+      int N,                        // number of flight legs
+      int* assignments              // host, N ints (output): pairing group ID for each leg
+  );
+  ```
+
+input_size_notes: |
+  - **small**: ~38 flight legs, ~7 stations (real airline schedule data)
+  - **medium**: ~38 flight legs, different instance (real airline schedule data)
+  - Legs are pre-sorted by departure time
+  - Station IDs are 0-indexed integers; `base_station` identifies the home hub
+
+output_contract: |
+  - `assignments[i]` = integer pairing group ID for leg `i`
+  - Every leg must be assigned (no unassigned legs)
+  - Legs in the same group must form a feasible pairing:
+    - Station continuity (chronologically sorted: prev leg arrives where next departs)
+    - Duty constraints satisfied within each duty period
+    - Rest constraints between duty periods
+  - Group IDs should be contiguous starting from 0 (but gaps are tolerated)
+  - The framework computes total cost from the assignments and compares with baseline
+  - `solution_compute` must be **idempotent** (same output on repeated calls)
+
+# -- L1 only: algorithm background --
+
+algorithm_background: |
+  **Crew Pairing** is a classic airline operations research problem, typically modeled
+  as a **Set Partitioning Problem (SPP)**:
+
+  1. **Generate candidate pairings**: Enumerate feasible sequences of legs that satisfy
+     all duty/rest constraints. This can be done via graph search (BFS/DFS) on a
+     time-space network where nodes are flight legs and edges represent valid connections.
+
+  2. **Select optimal pairings**: Solve a set partitioning ILP:
+     - Binary variable x_p for each candidate pairing p
+     - Minimize sum(cost_p * x_p)
+     - Subject to: each leg covered exactly once (sum of x_p over pairings containing leg i = 1)
+
+  For GPU acceleration, the pairing generation step is highly parallelizable:
+  each starting leg can independently explore its feasible pairing tree.
+
+# -- Hints by level --
+
+hints_l2: |
+  - Copy all leg data to GPU **once** in `solution_init`; reuse across calls
+  - The pairing generation step is embarrassingly parallel: start one search per leg
+  - Use a greedy set cover approach on GPU: select best pairing, mark covered legs, repeat
+  - Pre-compute a connection graph (which legs can follow which) to speed up search
+
+hints_l1: |
+  ### 1. Persistent GPU Data
+  Copy `dep_minutes`, `arr_minutes`, `dep_stations`, `arr_stations` to device memory
+  in `solution_init`. Pre-allocate output buffers. Reuse across all `solution_compute` calls.
+
+  ### 2. Connection Graph
+  Pre-compute for each leg which legs can potentially follow it (same station,
+  non-negative gap, gap < some max connection time). Store as a CSR-like structure
+  on the GPU.
+
+  ### 3. Parallel Pairing Generation
+  Launch one thread (or warp) per starting leg. Each thread explores feasible pairing
+  chains using DFS or BFS on the connection graph, respecting duty/rest constraints.
+  Store the top-K best pairings per starting leg (by cost-per-leg ratio).
+
+  ### 4. Greedy Set Cover
+  After generating candidate pairings, use a greedy approach:
+  - Sort candidates by cost-per-leg ratio
+  - Iterate: pick the cheapest uncovered-legs pairing, mark its legs as covered
+  - Assign remaining uncovered legs as single-leg pairings
+
+  ### 5. Cost Computation
+  For each candidate pairing, compute cost on the GPU:
+  - Split legs into duties (gap >= min_rest_min)
+  - duty_hours = sum of (last_arr - first_dep) per duty / 60
+  - block_hours = sum of (arr - dep) per leg / 60
+  - pos_fee = 10000 if first leg not at base
+  - total = duty_hours * duty_rate + block_hours * pairing_rate + pos_fee

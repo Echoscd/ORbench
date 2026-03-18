@@ -1,6 +1,12 @@
 # 二进制数据文件
 *.bin
+# 任务数据目录（生成的 input/expected/output/timing 等都不入库）
 tasks/*/data/
+tasks/**/data/
+
+# 运行产物（模型输出/编译结果/日志等，不入库）
+runs/
+runs/**
 
 # 编译产物
 cache/
@@ -17,6 +23,12 @@ solution
 __pycache__/
 *.pyc
 
+
+# LLM 交互日志
+logs/
+
+# 环境变量 (API keys)
+.env
 
 # 系统文件
 .DS_Store

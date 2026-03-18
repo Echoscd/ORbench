@@ -90,27 +90,28 @@ def get_task_dir(task_id: str) -> str:
     return os.path.join(TASKS_DIR, task_id)
 
 
-def load_llm_input(task_id: str) -> str:
-    """Load LLM_input.cu template (auto-generates from template if needed)"""
-    ensure_task_files_generated(task_id)
-    
-    task_dir = get_task_dir(task_id)
-    input_path = os.path.join(task_dir, "LLM_input.cu")
-
-    if not os.path.exists(input_path):
-        raise FileNotFoundError(f"LLM_input.cu not found: {input_path}")
-
-    with open(input_path, "r") as f:
-        return f.read()
-
-
 def load_prompt(task_id: str, level: int) -> str:
-    """Load prompt for a task at a given difficulty level (1, 2, or 3)"""
-    task_dir = get_task_dir(task_id)
-    prompt_path = os.path.join(task_dir, f"prompt_l{level}.md")
+    """
+    Load prompt for a task at a given difficulty level (1, 2, or 3).
 
+    Resolution order:
+      1. prompt_template.yaml  →  assembled by generate_prompt.py  (preferred)
+      2. prompt_l{level}.md    →  static file fallback (legacy)
+    """
+    task_dir = get_task_dir(task_id)
+
+    # Prefer template-based generation
+    tmpl_path = os.path.join(task_dir, "prompt_template.yaml")
+    if os.path.exists(tmpl_path):
+        from .generate_prompt import generate_prompt
+        return generate_prompt(task_id, level)
+
+    # Fallback: static markdown files
+    prompt_path = os.path.join(task_dir, f"prompt_l{level}.md")
     if not os.path.exists(prompt_path):
-        raise FileNotFoundError(f"Prompt not found: {prompt_path}")
+        raise FileNotFoundError(
+            f"Neither prompt_template.yaml nor prompt_l{level}.md found for task '{task_id}'"
+        )
 
     with open(prompt_path, "r") as f:
         return f.read()

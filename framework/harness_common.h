@@ -1,12 +1,19 @@
-// harness_common.h - ORBench v2.1 request-based benchmark harness skeleton (C-only)
+// harness_common.h - ORBench v2.2 benchmark harness skeleton (C-only)
 //
 // Included by both framework/harness_gpu.cu and framework/harness_cpu.c
 // so this file MUST be valid C (not C++).
 //
 // Three-layer architecture:
 //   harness (this file, generic)
-//     → task_io (task-specific I/O adapter, provided per task)
-//       → solution (LLM-written, pure computation, no I/O)
+//     -> task_io (task-specific I/O adapter, provided per task)
+//       -> solution (LLM-written, pure computation, no I/O)
+//
+// Timing output (timing.json):
+//   init_ms:  time for task_setup (includes solution_init)
+//   solve_ms: mean time per task_run call (solution_compute)
+//   Both are reported so downstream can compute:
+//     solve_speedup = cpu_solve / gpu_solve
+//     total_speedup = (cpu_init + cpu_solve) / (gpu_init + gpu_solve)
 
 #ifndef ORBENCH_HARNESS_COMMON_H
 #define ORBENCH_HARNESS_COMMON_H
@@ -39,19 +46,40 @@ extern void  task_cleanup(void* ctx);
 
 static int harness_main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <data_dir> [--validate]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <data_dir> [--validate] [--warmup N] [--trials N]\n", argv[0]);
         return 1;
     }
     const char* data_dir = argv[1];
-    int do_validate = (argc >= 3 && strcmp(argv[2], "--validate") == 0);
+
+    // Parse optional flags (order-independent)
+    int do_validate = 0;
+    int warmup     = WARMUP;      // default from harness_gpu.cu / harness_cpu.c
+    int num_trials = NUM_TRIALS;
+    {
+        int i;
+        for (i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--validate") == 0) {
+                do_validate = 1;
+            } else if (strcmp(argv[i], "--warmup") == 0 && i + 1 < argc) {
+                warmup = atoi(argv[++i]);
+            } else if (strcmp(argv[i], "--trials") == 0 && i + 1 < argc) {
+                num_trials = atoi(argv[++i]);
+            }
+        }
+    }
 
     // 1. Load input.bin
     char path[512];
     snprintf(path, sizeof(path), "%s/input.bin", data_dir);
     TaskData data = load_input_bin(path);
 
-    // 2. Setup: task_io parses requests, calls solution_init (not timed)
+    // 2. Setup: task_io parses requests, calls solution_init (TIMED)
+    TIMER_START();
     void* ctx = task_setup(&data, data_dir);
+    SYNC();
+    TIMER_STOP();
+    float init_ms = TIMER_ELAPSED_MS();
+
     if (!ctx) {
         fprintf(stderr, "task_setup failed\n");
         free_task_data(&data);
@@ -59,14 +87,14 @@ static int harness_main(int argc, char** argv) {
     }
 
     // 3. Warmup (not timed)
-    for (int w = 0; w < WARMUP; w++) {
+    for (int w = 0; w < warmup; w++) {
         task_run(ctx);
         SYNC();
     }
 
-    // 4. Timed trials
+    // 4. Timed trials (solve only)
     float total_ms = 0.0f, min_ms = 1e9f, max_ms = 0.0f;
-    for (int t = 0; t < NUM_TRIALS; t++) {
+    for (int t = 0; t < num_trials; t++) {
         TIMER_START();
         task_run(ctx);
         SYNC();
@@ -78,10 +106,29 @@ static int harness_main(int argc, char** argv) {
         if (ms > max_ms) max_ms = ms;
     }
 
-    float mean_ms = total_ms / (float)NUM_TRIALS;
-    printf("TIME_MS: %.3f\n", mean_ms);
-    fprintf(stderr, "Timing: mean=%.3f ms, min=%.3f ms, max=%.3f ms (%d trials)\n",
-            mean_ms, min_ms, max_ms, NUM_TRIALS);
+    float solve_mean_ms = (num_trials > 0) ? total_ms / (float)num_trials : 0.0f;
+
+    // Print legacy TIME_MS (solve only, for backward compat)
+    printf("TIME_MS: %.3f\n", solve_mean_ms);
+    printf("INIT_MS: %.3f\n", init_ms);
+    fprintf(stderr, "Init:  %.3f ms\n", init_ms);
+    fprintf(stderr, "Solve: mean=%.3f ms, min=%.3f ms, max=%.3f ms (%d trials)\n",
+            solve_mean_ms, min_ms, max_ms, num_trials);
+
+    // 4b. Write detailed timing to timing.json (machine-readable)
+    snprintf(path, sizeof(path), "%s/timing.json", data_dir);
+    {
+        FILE* tf = fopen(path, "w");
+        if (tf) {
+            fprintf(tf, "{"
+                    "\"init_ms\":%.3f,"
+                    "\"mean_ms\":%.3f,\"min_ms\":%.3f,\"max_ms\":%.3f,"
+                    "\"num_trials\":%d"
+                    "}\n",
+                    init_ms, solve_mean_ms, min_ms, max_ms, num_trials);
+            fclose(tf);
+        }
+    }
 
     // 5. Validate: run once and write output.txt
     if (do_validate) {

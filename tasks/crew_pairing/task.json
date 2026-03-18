@@ -1,0 +1,34 @@
+{
+  "task_id": "crew_pairing",
+  "name": "Airline Crew Pairing Optimization",
+  "category": "optimization",
+  "difficulty": 3,
+  "tags": ["optimization", "scheduling", "crew_pairing", "set_partitioning"],
+
+  "input_sizes": {
+    "small":  {"instance": "DataA_chunk3_id1", "N": 37, "seed": 42},
+    "medium": {"instance": "DataA_chunk15_id1", "N": 206, "seed": 42},
+    "large":  {"instance": "DataB_chunk5_id1", "N": 2239, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 50000.0
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 300
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "parallel_pairing_generation",
+    "cost_evaluation",
+    "greedy_set_cover",
+    "constraint_checking"
+  ]
+}

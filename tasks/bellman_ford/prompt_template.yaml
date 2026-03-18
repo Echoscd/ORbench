@@ -1,0 +1,105 @@
+# Bellman-Ford SSSP — Prompt Template
+#
+# Used by framework/generate_prompt.py to assemble level-specific prompts.
+# The framework auto-injects: generic constraints, input sizes (from task.json),
+# and cpu_reference.c content.
+
+task_description: |
+  Given a weighted directed graph (CSR format) and a batch of `(source, target)` queries,
+  compute the shortest distance from each source to its target.
+
+interface: |
+  ```c
+  // Called once before timing. Receive host-side data, do cudaMalloc / H2D etc.
+  extern "C" void solution_init(
+      int V, int E,
+      const int*   h_row_offsets,   // host, (V+1) ints, CSR row offsets
+      const int*   h_col_indices,   // host, E ints, CSR column indices
+      const float* h_weights        // host, E floats, edge weights (positive)
+  );
+
+  // Called multiple times (warmup + timed). MUST be idempotent.
+  // All parameters are host pointers.
+  extern "C" void solution_compute(
+      int num_requests,
+      const int*   h_sources,       // host, num_requests ints
+      const int*   h_targets,       // host, num_requests ints
+      float*       h_distances      // host, num_requests floats (output)
+  );
+  ```
+
+input_size_notes: |
+  Queries are 100 `(source, target)` pairs: 10 distinct sources × 10 targets each.
+
+output_contract: |
+  - `h_distances[i]` = shortest distance from `h_sources[i]` to `h_targets[i]`
+  - Unreachable: set to `1e30f` (NOT `INFINITY`, NOT `-1`)
+  - Tolerance: results within `atol=0.1` of CPU reference are accepted
+  - `solution_compute` must **synchronize** before returning
+    (all results must be visible in `h_distances` when the function returns)
+  - Queries with the same source are grouped consecutively (10 targets per source)
+
+# ── L1 only: algorithm background ──
+
+algorithm_background: |
+  **Bellman-Ford** computes single-source shortest paths in a weighted directed graph
+  stored in CSR (Compressed Sparse Row) format:
+  - `row_offsets[V+1]`: node u's edges are at indices `row_offsets[u]` to `row_offsets[u+1]-1`
+  - `col_indices[E]`: destination node for each edge
+  - `weights[E]`: edge weight (positive floats)
+
+  The algorithm runs up to `V-1` rounds. Each round relaxes all edges:
+  if `dist[u] + w(u,v) < dist[v]`, update `dist[v]`. Stop early if no update occurs in a round.
+
+# ── Hints by level ──
+
+hints_l2: |
+  - Copy graph data to GPU **once** in `solution_init`; reuse across all `solution_compute` calls
+  - Queries with the same `source` can share a single Bellman-Ford run (deduplicate sources)
+  - Use early termination: stop iterating when no edge is relaxed in a round
+  - Consider edge-parallel or vertex-parallel relaxation strategies
+
+hints_l1: |
+  ### 1. Persistent GPU Graph Data
+  Copy `row_offsets`, `col_indices`, and `weights` to device memory in `solution_init`.
+  Also pre-allocate a `dist` buffer on the device. Reuse everything across all
+  `solution_compute` calls — no per-call allocation.
+
+  ### 2. Source Deduplication
+  The 100 queries have only 10 distinct sources. Group queries by source and run
+  Bellman-Ford once per unique source. After computing the full `dist[]` array for
+  a source, look up `dist[target]` for all 10 targets of that source.
+
+  ### 3. Edge-Parallel Relaxation
+  Instead of node-parallel (one thread per node iterating over its neighbors),
+  use edge-parallel: assign one thread per edge `(u,v)`. Each thread reads `dist[u]`,
+  computes `dist[u] + weight`, and atomically updates `dist[v]` using an
+  `atomicMin`-equivalent CAS loop for floats:
+
+  ```cuda
+  __device__ void atomicMinFloat(float* addr, float val) {
+      int* addr_as_int = (int*)addr;
+      int old = *addr_as_int, assumed;
+      do {
+          assumed = old;
+          if (__int_as_float(assumed) <= val) break;
+          old = atomicCAS(addr_as_int, assumed, __float_as_int(val));
+      } while (assumed != old);
+  }
+  ```
+
+  ### 4. Early Termination
+  Use a device-side `int* d_updated` flag. Clear it with `cudaMemset` before each
+  round. Any thread that performs a successful relaxation sets `*d_updated = 1`.
+  Copy back to host after each round; if zero, break out of the iteration loop.
+
+  ### 5. Convergence Optimization
+  For sparse graphs, most nodes converge in far fewer than `V-1` rounds.
+  The early termination check makes the GPU version much faster in practice,
+  especially on the `large` input.
+
+  ### 6. Memory Coalescing
+  When using edge-parallel, ensure threads in a warp access consecutive edges
+  (consecutive entries in `col_indices` and `weights`), which naturally follows
+  the CSR layout.
+

@@ -1,0 +1,35 @@
+{
+  "task_id": "collision_detection",
+  "name": "2D Convex Polygon Collision Detection (Grid + SAT)",
+  "category": "computational_geometry",
+  "difficulty": 3,
+  "tags": ["broad_phase", "narrow_phase", "SAT", "uniform_grid", "AABB", "spatial_hashing"],
+
+  "input_sizes": {
+    "small":  {"N": 1000,  "seed": 42},
+    "medium": {"N": 10000, "seed": 42},
+    "large":  {"N": 50000, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "exact"
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "persistent_geometry_data",
+    "parallel_grid_build",
+    "pair_parallel_SAT",
+    "shared_memory_vertices",
+    "atomic_count_update",
+    "load_balanced_pair_generation"
+  ]
+}

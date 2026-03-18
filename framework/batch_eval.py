@@ -14,7 +14,7 @@ from typing import Optional
 
 from .task import load_task, load_all_tasks, ORBENCH_ROOT
 from .compile import compile_solution
-from .validate import validate_solution, ValidationResult
+from .validate import validate_output, data_exists, ValidationResult
 from .benchmark import benchmark_solution, BenchmarkResult
 from .config import get_config
 
@@ -45,8 +45,11 @@ def eval_single_sample(
     save_nsys_csv: bool = False,
 ) -> EvalResult:
     """
-    Evaluate a single solution sample: compile → validate → benchmark.
-    Runs in a subprocess to isolate CUDA context.
+    Evaluate a single solution sample: compile → benchmark+validate (single execution).
+
+    benchmark_solution always runs with --validate, producing both timing.json
+    and output.txt in one shot. Then validate_output does a pure file comparison.
+    This halves the number of solution_compute calls (14 instead of 27).
     """
     # Use config defaults if not provided
     config = get_config()
@@ -67,34 +70,47 @@ def eval_single_sample(
 
     exe_path = compile_result.executable_path
 
-    # Step 2: Validate correctness
+    # Step 2: Benchmark with --validate (single execution → timing + output.txt)
     try:
-        val_result = validate_solution(task_id, exe_path, device_id=device_id)
-        result.correct = val_result.correct
-        result.correctness_detail = val_result.results_by_size
-        if val_result.error:
-            result.error += val_result.error
+        nsys_csv_dir = None
+        if save_nsys_csv:
+            nsys_csv_dir = os.path.join(os.path.dirname(sample_path), f"nsys_sample_{sample_id}")
+
+        bench_result = benchmark_solution(
+            task_id, exe_path, device_id=device_id,
+            run_nsys=run_nsys,
+            save_nsys_csv=save_nsys_csv,
+            save_nsys_csv_dir=nsys_csv_dir,
+        )
+        result.benchmark = asdict(bench_result)
+
+        if bench_result.error:
+            result.error += bench_result.error
     except Exception as e:
-        result.error += f"Validation error: {str(e)[:200]}. "
+        result.error += f"Benchmark error: {str(e)[:200]}. "
         return result
 
-    # Step 3: Benchmark (only if correct)
-    if result.correct:
+    # Step 3: Validate correctness (pure file comparison, no extra execution)
+    bench_data_dir = bench_result.data_dir
+    bench_size = bench_result.size_name
+    if bench_data_dir and bench_size:
         try:
-            # Save nsys outputs in a dedicated subfolder: runs/.../bellman_ford/nsys_sample_0/
-            nsys_csv_dir = None
-            if save_nsys_csv:
-                nsys_csv_dir = os.path.join(os.path.dirname(sample_path), f"nsys_sample_{sample_id}")
+            if data_exists(bench_data_dir):
+                task = load_task(task_id)
+                size_params = task.input_sizes.get(bench_size, {})
+                num_requests = int(size_params.get("num_requests", 0))
 
-            bench_result = benchmark_solution(
-                task_id, exe_path, device_id=device_id,
-                run_nsys=run_nsys,
-                save_nsys_csv=save_nsys_csv,
-                save_nsys_csv_dir=nsys_csv_dir,
-            )
-            result.benchmark = asdict(bench_result)
+                passed, msg = validate_output(task_id, bench_data_dir, num_requests)
+                print(f"  [{bench_size}] {msg}")
+                result.correct = passed
+                result.correctness_detail = {bench_size: passed}
+                if not passed:
+                    result.error += f"Output mismatch on '{bench_size}': {msg}. "
+            else:
+                result.correctness_detail = {bench_size: False}
+                result.error += f"Cannot validate: missing expected_output.txt in {bench_data_dir}. "
         except Exception as e:
-            result.error += f"Benchmark error: {str(e)[:200]}. "
+            result.error += f"Validation error: {str(e)[:200]}. "
 
     return result
 

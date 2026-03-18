@@ -1,0 +1,143 @@
+# NFA-based Regular Expression Matching -- Prompt Template
+
+task_description: |
+  Given a compiled NFA (Non-deterministic Finite Automaton) and N input strings,
+  determine whether each string is accepted (full match) by the NFA.
+
+  The NFA is represented as:
+  - A set of states (0 to num_states-1), with a designated start state
+  - A transition table in CSR format: for each (state, symbol) pair, a list of target states
+  - An epsilon transition table in CSR format: for each state, a list of states reachable via ε-moves
+  - A boolean `is_accept` array marking which states are accept states
+
+  The matching algorithm (Thompson NFA simulation):
+  1. Start with the ε-closure of {start_state}
+  2. For each character in the string:
+     - For each active state, follow transitions on that character
+     - Compute ε-closure of the resulting state set
+  3. If any accept state is active after processing all characters → match (1), else no match (0)
+
+  The N input strings are packed as a flat array with offsets.
+  Each string's characters are symbol IDs (0-indexed integers, 0 to num_symbols-1).
+
+interface: |
+  ```c
+  // Called once before timing. Receive host-side NFA and string data.
+  extern "C" void solution_init(
+      int num_states,              // NFA state count
+      int num_symbols,             // alphabet size (e.g., 26 for a-z)
+      int start_state,             // start state ID
+      int num_strings,             // number of input strings
+      int total_chars,             // total characters across all strings
+      const int* trans_offsets,    // host, [num_states * num_symbols + 1], CSR offsets
+      const int* trans_targets,    // host, [num_trans], CSR targets
+      const int* eps_offsets,      // host, [num_states + 1], ε-transition CSR offsets
+      const int* eps_targets,      // host, [num_eps], ε-transition CSR targets
+      const int* is_accept,        // host, [num_states], 1 if accept state, 0 otherwise
+      const int* str_offsets,      // host, [num_strings + 1], start offset of each string
+      const int* str_data          // host, [total_chars], all strings concatenated (symbol IDs)
+  );
+
+  // Called multiple times (warmup + timed). MUST be idempotent.
+  extern "C" void solution_compute(
+      int num_strings,             // number of strings to match
+      int* results                 // host, [num_strings], output: 1=match, 0=no match
+  );
+  ```
+
+input_size_notes: |
+  - **small**: 1,000 strings, avg length 100, 32 NFA states
+  - **medium**: 100,000 strings, avg length 200, 64 NFA states
+  - **large**: 1,000,000 strings, avg length 500, 128 NFA states
+  - Alphabet is 26 symbols (0-25, representing a-z)
+  - Transition table CSR: `trans_offsets[s * num_symbols + c]` to `trans_offsets[s * num_symbols + c + 1]`
+    gives the range of target states in `trans_targets` for state `s` on symbol `c`
+  - Epsilon transitions: `eps_offsets[s]` to `eps_offsets[s+1]` gives ε-reachable states from `s`
+
+output_contract: |
+  - `results[i]` = 1 if string `i` is accepted by the NFA, 0 otherwise
+  - The match must be **exact**: the NFA must accept after processing all characters
+  - Results must match the CPU reference exactly (no tolerance)
+  - `solution_compute` must be **idempotent** and **synchronize** before returning
+
+# -- L1 only: algorithm background --
+
+algorithm_background: |
+  **Thompson NFA Simulation** processes strings in O(n × m) time where n = string length
+  and m = number of NFA states. The key data structure is the **active state set**:
+
+  - After processing each character, we maintain a set of all NFA states that could be
+    active given the input so far.
+  - Transitions: for each active state and the current character, follow all transitions
+    to get the next state set.
+  - Epsilon closure: after each step, expand the state set to include all states reachable
+    via ε-transitions (BFS/DFS).
+
+  **GPU parallel opportunities:**
+  - **Outer parallelism**: N strings are completely independent → one thread per string
+  - **State set as bitmask**: If num_states ≤ 32, use `uint32_t`; ≤ 64, use `uint64_t`;
+    ≤ 128, use `uint64_t[2]`. State transitions become bitwise OR operations.
+  - **Pre-compute transition bitmasks**: For each (state, symbol), pre-compute a bitmask
+    of target states. Then transition = OR of bitmasks for all active states.
+
+# -- Hints by level --
+
+hints_l2: |
+  - Copy NFA data to GPU **once** in `solution_init`; reuse across all `solution_compute` calls
+  - Each thread processes one string independently (embarrassingly parallel)
+  - Represent the active state set as a bitmask (uint32/uint64) for fast set operations
+  - Pre-compute a transition bitmask table: `trans_bitmask[state][symbol]` = bitmask of targets
+
+hints_l1: |
+  ### 1. Persistent GPU Data
+  Copy `trans_offsets`, `trans_targets`, `eps_offsets`, `eps_targets`, `is_accept`,
+  `str_offsets`, `str_data` to device memory in `solution_init`. Pre-allocate output buffer.
+
+  ### 2. One Thread Per String
+  Launch N threads. Each thread processes its string independently using Thompson NFA simulation.
+  No inter-thread communication needed.
+
+  ### 3. Bitmask State Set
+  For num_states ≤ 64: represent the active state set as a `uint64_t`.
+  - Set union = bitwise OR: `states |= new_states`
+  - Check accept = `states & accept_mask`
+  - Empty check = `states == 0`
+
+  For num_states ≤ 128: use `uint64_t[2]` (two 64-bit words).
+
+  ### 4. Pre-compute Transition Bitmask Table
+  In `solution_init`, build a table `trans_bitmask[state * num_symbols + symbol]`
+  where each entry is a bitmask of target states. Store in device memory.
+
+  Then each transition step becomes:
+  ```cuda
+  uint64_t next = 0;
+  while (current) {
+      int s = __ffsll(current) - 1;  // find lowest set bit
+      current &= current - 1;        // clear it
+      next |= trans_bitmask[s * num_symbols + c];
+  }
+  ```
+
+  ### 5. Epsilon Closure via Bitmask Fixpoint
+  Pre-compute `eps_bitmask[state]` = bitmask of states reachable via one ε-step.
+  Then epsilon closure = iterate until fixpoint:
+  ```cuda
+  uint64_t prev;
+  do {
+      prev = states;
+      uint64_t tmp = states;
+      while (tmp) {
+          int s = __ffsll(tmp) - 1;
+          tmp &= tmp - 1;
+          states |= eps_bitmask[s];
+      }
+  } while (states != prev);
+  ```
+
+  ### 6. Shared Memory for Transition Table
+  If the transition bitmask table fits in shared memory
+  (num_states × num_symbols × sizeof(bitmask)):
+  - 32 states × 26 symbols × 4 bytes = 3.3 KB → easily fits
+  - 64 states × 26 symbols × 8 bytes = 13.3 KB → fits
+  - 128 states × 26 symbols × 16 bytes = 53 KB → tight, may need partial loading

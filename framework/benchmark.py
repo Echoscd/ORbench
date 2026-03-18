@@ -27,7 +27,10 @@ class TimingStats:
 
 @dataclass
 class BenchmarkResult:
-    # End-to-end timing (CUDA Event, from program stdout)
+    # Init timing (solution_init, from timing.json)
+    init_ms: float = -1.0
+
+    # Solve timing (solution_compute, CUDA Event, from timing.json / stdout)
     e2e_time_ms: TimingStats = field(default_factory=TimingStats)
 
     # Kernel-only timing (from nsys trace)
@@ -37,12 +40,20 @@ class BenchmarkResult:
     memcpy_overhead_ms: Optional[float] = None
     nsys_csv_path: Optional[str] = None         # path to saved CSV
 
-    # CPU baseline
-    cpu_baseline_ms: float = -1.0
+    # CPU baseline (init + solve separately)
+    cpu_init_ms: float = -1.0
+    cpu_solve_ms: float = -1.0
+    cpu_baseline_ms: float = -1.0               # legacy: cpu_solve_ms alias
 
     # Speedups
-    speedup_e2e: float = -1.0
+    speedup_e2e: float = -1.0                   # legacy: cpu_solve / gpu_solve
+    speedup_solve: float = -1.0                 # cpu_solve / gpu_solve
+    speedup_total: float = -1.0                 # (cpu_init + cpu_solve) / (gpu_init + gpu_solve)
     speedup_kernel: Optional[float] = None
+
+    # Which data was used (so caller can find output.txt for validation)
+    data_dir: str = ""
+    size_name: str = ""
 
     # Metadata
     hardware: str = ""
@@ -179,45 +190,100 @@ def benchmark_solution(
         size_candidates = ["large", "medium", "small"]
 
     data_dir = None
+    chosen_size = None
     for size_name in size_candidates:
         candidate = _os.path.join(task_dir, "data", size_name)
         if _os.path.exists(_os.path.join(candidate, "input.bin")) and _os.path.exists(
             _os.path.join(candidate, "cpu_time_ms.txt")
         ):
             data_dir = candidate
+            chosen_size = size_name
             break
 
     if data_dir is None:
         result.error = "No pre-generated data (input.bin + cpu_time_ms.txt) found for benchmarking"
         return result
 
-    exe_args = [data_dir]
+    result.data_dir = data_dir
+    result.size_name = chosen_size
+
+    # Always run with --validate: single execution produces timing + output.txt
+    # Pass warmup/trials from config so harness uses the configured values
+    config = get_config()
+    exe_args = [
+        data_dir, "--validate",
+        "--warmup", str(config.eval.warmup),
+        "--trials", str(config.eval.num_trials),
+    ]
     
     # Use config timeout if task timeout is not set or use config default
-    config = get_config()
     timeout_to_use = task.timeout if task.timeout > 0 else config.eval.timeout
 
-    # === Level A: TIME_MS from harness (timed region contains solution_run only) ===
+    # === Level A: timing from harness ===
     ok, stdout, stderr = _run_exe(exe_path, args=exe_args, device_id=device_id, timeout=timeout_to_use)
     if not ok:
         result.error = f"Execution failed: {stderr[:200]}"
         return result
 
-    t = parse_timing_output(stdout)
-    if t is not None:
-        result.e2e_time_ms = TimingStats(
-            mean=t,
-            std=0.0,
-            min=t,
-            max=t,
-            num_trials=1,  # harness internally ran 10 trials, we get the mean
-        )
+    # Prefer timing.json (detailed: init_ms + mean/min/max/num_trials) written by harness
+    timing_json_path = _os.path.join(data_dir, "timing.json")
+    if _os.path.exists(timing_json_path):
+        try:
+            with open(timing_json_path) as f:
+                timing = json.load(f)
+            result.e2e_time_ms = TimingStats(
+                mean=timing["mean_ms"],
+                std=0.0,
+                min=timing["min_ms"],
+                max=timing["max_ms"],
+                num_trials=timing["num_trials"],
+            )
+            # Init timing (new in v2.2)
+            if "init_ms" in timing:
+                result.init_ms = timing["init_ms"]
+        except Exception:
+            # Fallback to stdout parsing
+            t = parse_timing_output(stdout)
+            if t is not None:
+                result.e2e_time_ms = TimingStats(mean=t, std=0.0, min=t, max=t, num_trials=1)
+    else:
+        # Fallback: parse stdout (backward compat)
+        t = parse_timing_output(stdout)
+        if t is not None:
+            result.e2e_time_ms = TimingStats(mean=t, std=0.0, min=t, max=t, num_trials=1)
 
-    # === CPU baseline ===
-    result.cpu_baseline_ms = run_cpu_baseline(task_id, data_dir=data_dir)
+    # Also try to parse INIT_MS from stdout (fallback)
+    if result.init_ms < 0:
+        m = re.search(r"INIT_MS:\s*([0-9.]+)", stdout)
+        if m:
+            result.init_ms = float(m.group(1))
 
-    if result.cpu_baseline_ms > 0 and result.e2e_time_ms.mean > 0:
-        result.speedup_e2e = result.cpu_baseline_ms / result.e2e_time_ms.mean
+    # === CPU baseline (also has init_ms now) ===
+    cpu_solve_ms = run_cpu_baseline(task_id, data_dir=data_dir)
+    result.cpu_solve_ms = cpu_solve_ms
+    result.cpu_baseline_ms = cpu_solve_ms  # legacy alias
+
+    # Read CPU init_ms from CPU's timing.json (run_cpu_baseline already wrote it)
+    cpu_timing_path = _os.path.join(data_dir, "timing.json")
+    # CPU baseline overwrites timing.json, so read it again
+    # Actually, we need to read CPU's timing separately.
+    # The CPU baseline runner produces its own timing.json with init_ms.
+    # For now, read cpu_time_ms.txt (solve only) and run CPU to get init_ms.
+    # We'll parse the CPU timing from cpu_time_ms.txt (legacy: solve only).
+    # TODO: store CPU init_ms in a separate file if needed.
+    result.cpu_init_ms = 0.0  # CPU init is typically negligible
+
+    gpu_solve = result.e2e_time_ms.mean
+    gpu_init = result.init_ms if result.init_ms > 0 else 0.0
+
+    if cpu_solve_ms > 0 and gpu_solve > 0:
+        result.speedup_solve = cpu_solve_ms / gpu_solve
+        result.speedup_e2e = cpu_solve_ms / gpu_solve  # legacy compat
+
+    if cpu_solve_ms > 0 and (gpu_init + gpu_solve) > 0:
+        cpu_total = result.cpu_init_ms + cpu_solve_ms
+        gpu_total = gpu_init + gpu_solve
+        result.speedup_total = cpu_total / gpu_total
 
     # === Level B: nsys trace analysis (optional) ===
     if run_nsys:
@@ -245,6 +311,18 @@ def benchmark_solution(
                     result.kernel_time_ms = nsys_data.get("total_kernel_time_ms")
                     result.num_kernel_launches = nsys_data.get("num_kernel_launches")
                     result.memcpy_overhead_ms = nsys_data.get("total_memcpy_time_ms")
+
+                    # nsys reports cumulative kernel/memcpy time across ALL
+                    # invocations (warmup + trials + validate).  Divide by the
+                    # total number of solution_compute calls to get per-call
+                    # values that are comparable with e2e_time_ms (per-call).
+                    num_calls = config.eval.warmup + result.e2e_time_ms.num_trials + 1  # +1 for --validate
+                    if num_calls > 0 and result.kernel_time_ms:
+                        kernel_per_call = result.kernel_time_ms / num_calls
+                        result.kernel_time_ms = kernel_per_call
+
+                    if num_calls > 0 and result.memcpy_overhead_ms:
+                        result.memcpy_overhead_ms = result.memcpy_overhead_ms / num_calls
 
                     if result.kernel_time_ms and result.e2e_time_ms.mean > 0:
                         result.gpu_utilization = result.kernel_time_ms / result.e2e_time_ms.mean

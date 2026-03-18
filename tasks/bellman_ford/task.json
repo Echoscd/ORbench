@@ -7,8 +7,7 @@
 
   "input_sizes": {
     "small":  {"V": 1000,   "E": 5000,    "seed": 42, "num_requests": 100},
-    "medium": {"V": 100000, "E": 500000,  "seed": 42, "num_requests": 100},
-    "large":  {"V": 500000, "E": 2500000, "seed": 42, "num_requests": 100}
+    "medium": {"V": 100000, "E": 500000,  "seed": 42, "num_requests": 100}
   },
 
   "correctness": {

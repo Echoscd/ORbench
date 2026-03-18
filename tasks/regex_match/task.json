@@ -1,0 +1,35 @@
+{
+  "task_id": "regex_match",
+  "name": "NFA-based Regular Expression Matching",
+  "category": "automata_simulation",
+  "difficulty": 3,
+  "tags": ["NFA", "state_propagation", "bitmask", "multi_string", "CSR"],
+
+  "input_sizes": {
+    "small":  {"num_strings": 1000,    "avg_str_len": 100, "num_states": 32,  "seed": 42},
+    "medium": {"num_strings": 100000,  "avg_str_len": 200, "num_states": 64,  "seed": 42},
+    "large":  {"num_strings": 1000000, "avg_str_len": 500, "num_states": 128, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "exact"
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 120
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "multi_string_parallel",
+    "bitmask_state_set",
+    "warp_level_state_propagation",
+    "shared_memory_transition_table",
+    "coalesced_string_access",
+    "persistent_kernel_batching"
+  ]
+}

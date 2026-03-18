@@ -1,7 +1,7 @@
 // ORBench v2.1 smoke-test solution for bellman_ford
 //
-// Implements the three LLM-facing functions:
-//   solution_init / solution_compute / solution_free
+// Implements the two LLM-facing functions:
+//   solution_init / solution_compute
 //
 // NOTE: This is a CPU-based implementation wrapped in .cu for correctness-first.
 // It exercises the full harness → task_io → solution pipeline end-to-end.
@@ -65,6 +65,8 @@ extern "C" void solution_compute(int num_requests,
     }
 }
 
-extern "C" void solution_free(void) {
-    if (g_dist_buf) { free(g_dist_buf); g_dist_buf = NULL; }
-}
+
+
+
+
+

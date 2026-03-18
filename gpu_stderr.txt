@@ -1,2 +1,0 @@
-Graph: V=500000, E=2500000, source=0
-Converged in 24 rounds, GPU time: 1.705 ms

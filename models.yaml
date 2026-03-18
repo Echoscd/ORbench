@@ -1,0 +1,131 @@
+# ORBench Model Registry
+# All LLM API configurations in one place.
+# API keys are read from environment variables (never stored here).
+
+providers:
+  anthropic:
+    api_base: "https://api.anthropic.com/v1/messages"
+    api_key_env: "ANTHROPIC_API_KEY"
+    rate_limit:
+      requests_per_minute: 50
+      tokens_per_minute: 100000
+    retry:
+      max_retries: 3
+      backoff_base: 2.0
+
+  openai:
+    api_base: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    rate_limit:
+      requests_per_minute: 60
+      tokens_per_minute: 150000
+    retry:
+      max_retries: 3
+      backoff_base: 2.0
+
+  deepseek:
+    api_base: "https://api.deepseek.com/v1"
+    api_key_env: "DEEPSEEK_API_KEY"
+    rate_limit:
+      requests_per_minute: 30
+      tokens_per_minute: 60000
+    retry:
+      max_retries: 5
+      backoff_base: 3.0
+
+  google:
+    api_base: "https://generativelanguage.googleapis.com/v1beta"
+    api_key_env: "GOOGLE_API_KEY"
+    rate_limit:
+      requests_per_minute: 15
+      tokens_per_minute: 100000
+    retry:
+      max_retries: 3
+      backoff_base: 2.0
+
+models:
+  claude-sonnet-4:
+    provider: anthropic
+    model_string: "claude-sonnet-4-20250514"
+    max_tokens: 8192
+    cost_per_1k_input: 0.003
+    cost_per_1k_output: 0.015
+    supports_system_prompt: true
+
+  claude-opus-4:
+    provider: anthropic
+    model_string: "claude-opus-4-20250514"
+    max_tokens: 8192
+    cost_per_1k_input: 0.015
+    cost_per_1k_output: 0.075
+    supports_system_prompt: true
+
+  gpt-4o:
+    provider: openai
+    model_string: "gpt-4o-2024-11-20"
+    max_tokens: 16384
+    cost_per_1k_input: 0.0025
+    cost_per_1k_output: 0.01
+    supports_system_prompt: true
+
+  gpt-4.1:
+    provider: openai
+    model_string: "gpt-4.1-2025-04-14"
+    max_tokens: 32768
+    cost_per_1k_input: 0.002
+    cost_per_1k_output: 0.008
+    supports_system_prompt: true
+
+  o3-mini:
+    provider: openai
+    model_string: "o3-mini"
+    max_tokens: 65536
+    cost_per_1k_input: 0.00115
+    cost_per_1k_output: 0.0044
+    supports_system_prompt: false
+    note: "reasoning model, may need longer timeout"
+
+  deepseek-v3:
+    provider: deepseek
+    model_string: "deepseek-chat"
+    max_tokens: 8192
+    cost_per_1k_input: 0.00014
+    cost_per_1k_output: 0.00028
+    supports_system_prompt: true
+
+  deepseek-r1:
+    provider: deepseek
+    model_string: "deepseek-reasoner"
+    max_tokens: 65536
+    cost_per_1k_input: 0.00055
+    cost_per_1k_output: 0.00219
+    supports_system_prompt: false
+    note: "reasoning model — needs large max_tokens"
+
+  gemini-2.5-pro:
+    provider: google
+    model_string: "gemini-2.5-pro"
+    max_tokens: 65536
+    cost_per_1k_input: 0.00125
+    cost_per_1k_output: 0.01
+    supports_system_prompt: true
+    note: "thinking model — needs large max_tokens (thinking + output combined)"
+
+  gemini-3.1-pro-preview:
+    provider: google
+    model_string: "gemini-3.1-pro-preview"
+    max_tokens: 65536
+    cost_per_1k_input: 0.00125
+    cost_per_1k_output: 0.01
+    supports_system_prompt: true
+    note: "preview model"
+
+  gemini-3-flash:
+    provider: google
+    model_string: "gemini-3.1-pro-preview"
+    max_tokens: 65536
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.0006
+    supports_system_prompt: true
+    note: "preview model"
+

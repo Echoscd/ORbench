@@ -32,10 +32,6 @@ extern void solution_compute(int num_requests,
                              const int* h_targets,
                              float* h_distances);
 
-// solution_free: release GPU resources
-// Called once, NOT timed.
-extern void solution_free(void);
-
 #ifdef __cplusplus
 }
 #endif
@@ -126,7 +122,6 @@ void task_write_output(void* test_data, const char* output_path) {
 }
 
 void task_cleanup(void* test_data) {
-    solution_free();
     if (!test_data) return;
     TaskIOContext* ctx = (TaskIOContext*)test_data;
     free(ctx->sources);

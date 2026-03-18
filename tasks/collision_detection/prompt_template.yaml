@@ -1,0 +1,114 @@
+# 2D Convex Polygon Collision Detection -- Prompt Template
+
+task_description: |
+  Given N 2D convex polygons (with precomputed axis-aligned bounding boxes), determine
+  all collision pairs and output the collision count per polygon.
+
+  Each polygon is a convex hull with 3-8 vertices (counterclockwise order).
+  Polygons are stored in a CSR-like format: `poly_offsets[i]` to `poly_offsets[i+1]`
+  gives the vertex range in `vertices_x` and `vertices_y`.
+
+  The classic two-phase approach:
+  1. **Broad Phase**: Use a uniform spatial grid to quickly identify candidate pairs
+     that might collide (based on AABB overlap within the same grid cell).
+  2. **Narrow Phase**: For each candidate pair, use the Separating Axis Theorem (SAT)
+     to determine exact collision.
+
+  **Separating Axis Theorem (SAT)**:
+  Two convex polygons overlap if and only if there is no separating axis.
+  For each edge of both polygons, compute the edge normal, project all vertices of
+  both polygons onto this axis, and check if the projections overlap.
+  If any axis separates them, they don't collide.
+
+  `counts[i]` = number of distinct polygons that polygon i collides with.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int N,                      // number of polygons
+      int total_verts,            // total vertices across all polygons
+      int world_size_x100,        // world dimension * 100 (decode: / 100.0f)
+      int cell_size_x100,         // grid cell size * 100 (decode: / 100.0f)
+      const int* poly_offsets,    // host, [N+1], CSR offsets into vertex arrays
+      const float* vertices_x,   // host, [total_verts], x-coordinates
+      const float* vertices_y,   // host, [total_verts], y-coordinates
+      const float* aabb           // host, [N*4], per-polygon [min_x, min_y, max_x, max_y]
+  );
+
+  extern "C" void solution_compute(
+      int N,                      // number of polygons
+      int* counts                 // host, [N], output: collision count per polygon
+  );
+  ```
+
+input_size_notes: |
+  - **small**: 1,000 polygons, ~5,000 vertices
+  - **medium**: 10,000 polygons, ~50,000 vertices
+  - **large**: 50,000 polygons, ~250,000 vertices
+  - Polygons are clustered (dense regions with many collisions, sparse regions with few)
+  - Vertices are counterclockwise, 3-8 per polygon
+  - `world_size` and `cell_size` are encoded as int * 100 (divide by 100.0f to decode)
+  - AABB layout: `aabb[i*4+0]=min_x, aabb[i*4+1]=min_y, aabb[i*4+2]=max_x, aabb[i*4+3]=max_y`
+
+output_contract: |
+  - `counts[i]` = number of distinct polygons colliding with polygon i
+  - Counts must match CPU reference exactly (integer values)
+  - Each collision pair (i,j) increments both `counts[i]` and `counts[j]` by 1
+  - Must not double-count: if polygons i and j collide, count it once per polygon
+  - `solution_compute` must be **idempotent** and **synchronize** before returning
+
+algorithm_background: |
+  **Broad Phase — Uniform Grid**:
+  1. Divide the world into cells of size `cell_size × cell_size`
+  2. For each polygon, determine which grid cells its AABB overlaps
+  3. Insert the polygon into each overlapping cell
+  4. For each cell, generate candidate pairs from polygons sharing that cell
+  5. Deduplicate candidate pairs (same pair may appear in multiple cells)
+
+  **Narrow Phase — Separating Axis Theorem**:
+  For two convex polygons A (na vertices) and B (nb vertices):
+  1. For each edge of A and B (na + nb edges total):
+     a. Compute edge normal: edge (dx, dy) → normal (-dy, dx)
+     b. Project all vertices of A onto normal → interval [min_a, max_a]
+     c. Project all vertices of B onto normal → interval [min_b, max_b]
+     d. If max_a < min_b or max_b < min_a → separating axis found → NO collision
+  2. If no separating axis found among all edges → collision
+
+  Complexity: O(na × nb) per pair for SAT, O(C × V²) total for C candidate pairs.
+
+hints_l2: |
+  - Copy polygon data to GPU **once** in `solution_init`; reuse across calls
+  - Broad phase: build grid on GPU, use spatial hashing for cell assignment
+  - Narrow phase: one thread per candidate pair, each running SAT independently
+  - Use `atomicAdd` to increment collision counts
+  - Deduplicate candidate pairs to avoid double-counting
+
+hints_l1: |
+  ### 1. Persistent GPU Data
+  Copy `poly_offsets`, `vertices_x`, `vertices_y`, `aabb` to device in `solution_init`.
+  Pre-allocate output `counts` buffer on device.
+
+  ### 2. Grid Construction (GPU)
+  - Kernel 1: For each polygon, compute cell range from AABB, emit (cell_hash, poly_id) pairs
+  - Sort by cell_hash using `thrust::sort_by_key`
+  - Kernel 2: Find cell boundaries (start/end of each cell in sorted array)
+
+  ### 3. Candidate Pair Generation
+  For each cell, generate all (i, j) pairs where i < j:
+  - Option A: One thread per cell, iterate pairs (load-imbalanced for dense cells)
+  - Option B: Flatten pairs with prefix sum, one thread per pair (better balance)
+
+  ### 4. Deduplication
+  Since the same pair can appear in multiple cells:
+  - Sort candidate pairs by (i, j)
+  - Remove consecutive duplicates (thrust::unique)
+
+  ### 5. Parallel SAT
+  One thread per unique candidate pair:
+  - Load vertices of both polygons (can use shared memory for the pair)
+  - Test all edge normals of both polygons
+  - Early exit on first separating axis
+  - If collision: `atomicAdd(&counts[i], 1); atomicAdd(&counts[j], 1);`
+
+  ### 6. AABB Pre-filter
+  Before running SAT, test AABB overlap (4 comparisons) as a cheap early exit.

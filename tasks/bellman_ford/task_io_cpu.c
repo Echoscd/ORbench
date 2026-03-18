@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ===== LLM / CPU-baseline interface (same three functions) =====
+// ===== LLM / CPU-baseline interface (two functions) =====
 extern void solution_init(int V, int E,
                           const int* h_row_offsets,
                           const int* h_col_indices,
@@ -20,8 +20,6 @@ extern void solution_compute(int num_requests,
                              const int* h_sources,
                              const int* h_targets,
                              float* h_distances);
-
-extern void solution_free(void);
 
 // ===== task_io internal state (identical to task_io.cu) =====
 typedef struct {
@@ -99,7 +97,6 @@ void task_write_output(void* test_data, const char* output_path) {
 }
 
 void task_cleanup(void* test_data) {
-    solution_free();
     if (!test_data) return;
     TaskIOContext* ctx = (TaskIOContext*)test_data;
     free(ctx->sources);
