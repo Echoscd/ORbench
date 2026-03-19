@@ -1,0 +1,165 @@
+# Network Revenue Management DP — Prompt Template
+#
+# Used by framework/generate_prompt.py to assemble level-specific prompts.
+# The framework auto-injects: generic constraints, input sizes (from task.json),
+# and cpu_reference.c content.
+
+task_description: |
+  Solve a network revenue management dynamic programming problem via backward induction.
+
+  A seller manages `m` resources (e.g., airline seats on flight legs), each with finite capacity,
+  over `T` discrete time periods. There are `n` products (e.g., itineraries), and each product
+  consumes a subset of resources described by the consumption matrix `A[m*n]`.
+
+  At each time period, the seller chooses one of `L` price menus. Under menu `l`, at most one
+  customer arrives and either purchases product `j` (with probability `demand_prob[l*(n+1)+j+1]`,
+  consuming resources `A[:, j]`) or makes no purchase (probability `demand_prob[l*(n+1)+0]`).
+
+  The goal is to compute the optimal expected revenue via backward induction:
+    V[t][s] = max over menus l of { E[ revenue + V[t+1][s'] ] }
+    V[T+1][s] = 0  (terminal condition)
+
+  The state `s` encodes the remaining capacity vector using row-major indexing:
+    s = c_0 + (C_0+1) * c_1 + (C_0+1)*(C_1+1) * c_2 + ...
+
+  Output: `V_out[s]` = V[1][s] for all `S` states.
+
+interface: |
+  ```c
+  // This task uses the compute_only interface.
+  // There is NO solution_init. ALL work must happen inside solution_compute,
+  // including GPU memory allocation, data upload, kernel execution, and result download.
+  // The ENTIRE execution of solution_compute is timed.
+
+  extern "C" void solution_compute(
+      int m,                        // number of resources
+      int n,                        // number of products
+      int T,                        // number of time periods (selling horizon)
+      int L,                        // number of price menus
+      int S,                        // state space size = product of (C_i + 1)
+      const int*   capacity,        // HOST, [m], initial capacity per resource
+      const int*   consumption,     // HOST, [m*n], row-major: A[i*n+j] = resource i consumed by product j
+      const float* demand_prob,     // HOST, [L*(n+1)], demand_prob[l*(n+1)+k]: prob of outcome k under menu l
+      const int*   demand_cons,     // HOST, [L*(n+1)*m], resource consumption for each outcome
+      const float* demand_revenue,  // HOST, [L*(n+1)], immediate revenue for each outcome
+      float* V_out                  // HOST, [S], output: V[1][s] for all states
+  );
+
+  // Optional: release any GPU resources (called after timing).
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - **small**: m=2 resources, n=4 products, T=100 periods, L=10 menus, S=441 states
+  - **medium**: m=3, n=8, T=300, L=20, S≈30K states
+  - **large**: m=4, n=12, T=500, L=30, S≈2.8M states
+  - State encoding: `s = c_0 + (C_0+1) * c_1 + ...` (row-major multi-index)
+  - Demand outcomes: k=0 means no purchase, k=j+1 means product j purchased
+  - `demand_cons[(l*(n+1)+k)*m + i]` = amount of resource i consumed by outcome k under menu l
+  - If a demand outcome is infeasible (would make capacity negative), treat it as no purchase
+    (revenue = 0, state unchanged)
+
+output_contract: |
+  - `V_out[s]` = optimal expected revenue from time 1, starting in capacity state s
+  - All values should be non-negative (expected revenue ≥ 0)
+  - Tolerance: results within `atol=0.1` and `rtol=1e-4` of CPU reference are accepted
+  - `solution_compute` must **synchronize** before returning
+    (all results must be visible in `V_out` when the function returns)
+  - All input pointers are HOST pointers. You must cudaMemcpy them to device yourself.
+  - The entire `solution_compute` call is timed, including cudaMalloc and cudaMemcpy.
+
+# ── L1 only: algorithm background ──
+
+algorithm_background: |
+  **Backward Induction DP for Network Revenue Management**
+
+  This is a standard backward induction (dynamic programming) over a finite horizon:
+
+  1. **State space**: Each state `s` encodes remaining capacities `(c_0, c_1, ..., c_{m-1})`
+     with `c_i ∈ {0, 1, ..., C_i}`. Total states `S = ∏(C_i + 1)`.
+
+  2. **State encoding**: Row-major indexing:
+     ```
+     s = c_0 + (C_0+1) * c_1 + (C_0+1)*(C_1+1) * c_2 + ...
+     ```
+     Decode by repeated modulo/division.
+
+  3. **Bellman equation** (for each time step t = T down to 1):
+     ```
+     V[t][s] = max_{l=0..L-1} Σ_{k=0..n} prob[l][k] * (rev[l][k] + V[t+1][s'])
+     ```
+     where `s'` is the state after consuming resources for outcome k.
+     If outcome k is infeasible (capacity goes negative), revenue is 0 and state is unchanged.
+
+  4. **Terminal condition**: `V[T+1][s] = 0` for all states.
+
+  5. **Complexity per time step**: `S × L × (n+1) × O(m)` for decode/encode.
+
+# ── Hints by level ──
+
+hints_l2: |
+  - Each time step t, all S states can be computed independently → one GPU thread per state
+  - Use double buffering: `V_curr[S]` and `V_next[S]`, swap after each time step
+  - State decoding (s → capacity vector) and encoding (capacity vector → s) use modulo/division
+  - Upload all problem data to GPU at the start of `solution_compute`; reuse across time steps
+  - T time steps are sequential (V[t] depends on V[t+1]); consider persistent kernel with grid sync
+
+hints_l1: |
+  ### 1. GPU Data Upload
+  At the start of `solution_compute`, allocate device memory and copy `capacity`, `demand_prob`,
+  `demand_cons`, `demand_revenue` to device. Pre-allocate two V buffers (double buffer) on device.
+
+  ### 2. One Thread per State
+  Each time step, launch S threads. Thread `s`:
+  1. Decode state `s` into capacity vector `c[m]` using modulo/division
+  2. Loop over L menus, for each compute expected value over n+1 outcomes
+  3. For each outcome k, check feasibility (c[i] - cons[i] >= 0 for all i)
+  4. If feasible, encode new state and look up `V_next[new_s]`; else use `V_next[s]`
+  5. Store `max(expected_values)` into `V_curr[s]`
+
+  ### 3. Double Buffer + Kernel-per-Step
+  Use two device arrays `V_a[S]` and `V_b[S]`. Each time step launches one kernel:
+  ```
+  for t = T downto 1:
+      dp_kernel<<<S/256, 256>>>(t, V_curr, V_next, ...)
+      swap(V_curr, V_next)
+  ```
+
+  ### 4. Shared Memory for V_next (Small S)
+  For small instances (S=441), the entire `V_next` table fits in shared memory (1.7 KB).
+  Load it cooperatively at block start to eliminate global memory latency:
+  ```cuda
+  __shared__ float s_V_next[MAX_S];
+  for (int i = threadIdx.x; i < S; i += blockDim.x)
+      s_V_next[i] = V_next[i];
+  __syncthreads();
+  ```
+
+  ### 5. Persistent Kernel (Advanced)
+  Instead of launching T separate kernels, use a single persistent kernel with
+  `cooperative_groups::grid_group::sync()` for inter-step synchronization:
+  ```cuda
+  __global__ void dp_persistent(int T, float* V_a, float* V_b, ...) {
+      auto grid = cooperative_groups::this_grid();
+      for (int t = T; t >= 1; t--) {
+          // compute V_curr from V_next
+          grid.sync();
+          // swap
+      }
+  }
+  ```
+  This eliminates kernel launch overhead for T=500 steps.
+
+  ### 6. Warp-Level Menu Reduction
+  If L is large (30), distribute menus across warp lanes. Each lane computes
+  expected value for a subset of menus, then use `__shfl_down_sync` to find the max:
+  ```cuda
+  float my_best = -1e30f;
+  for (int l = lane_id; l < L; l += 32) {
+      float ev = compute_expected_value(s, l, V_next);
+      my_best = fmaxf(my_best, ev);
+  }
+  // Warp reduction
+  for (int offset = 16; offset > 0; offset >>= 1)
+      my_best = fmaxf(my_best, __shfl_down_sync(0xFFFFFFFF, my_best, offset));
+  ```

@@ -39,6 +39,9 @@ class BenchmarkResult:
     num_kernel_launches: Optional[int] = None
     memcpy_overhead_ms: Optional[float] = None
     nsys_csv_path: Optional[str] = None         # path to saved CSV
+    # Optional detailed breakdown from nsys (per-kernel and mem ops)
+    kernel_summary: Optional[dict] = None       # name -> {count,total_ms,avg_us,...}
+    mem_time_summary: Optional[dict] = None     # op(HtoD/DtoH/memset) -> {count,total_ms,...}
 
     # CPU baseline (init + solve separately)
     cpu_init_ms: float = -1.0
@@ -330,22 +333,30 @@ def benchmark_solution(
                     if result.cpu_baseline_ms > 0 and result.kernel_time_ms:
                         result.speedup_kernel = result.cpu_baseline_ms / result.kernel_time_ms
 
-                # Full analysis from all CSVs
-                if save_nsys_csv and save_nsys_csv_dir and exported_csvs:
-                    import shutil
-                    os.makedirs(save_nsys_csv_dir, exist_ok=True)
-
-                    # Copy all CSV files to run directory
-                    for report_name, csv_path in exported_csvs.items():
-                        dst = os.path.join(save_nsys_csv_dir, f"nsys_{report_name}.csv")
-                        shutil.copy2(csv_path, dst)
-                    print(f"  [nsys] {len(exported_csvs)} CSV files saved to {save_nsys_csv_dir}")
-
-                    # Generate comprehensive summary
+                # Full analysis from all CSVs (for detailed per-kernel / mem breakdown)
+                if exported_csvs:
                     full_analysis = analyze_all_nsys_csvs(exported_csvs)
-                    summary_path = os.path.join(save_nsys_csv_dir, "nsys_summary.txt")
-                    write_nsys_full_summary(full_analysis, summary_path)
-                    print(f"  [nsys] Full summary saved to {summary_path}")
+                    # Prefer the aggregated kernel_summary; fall back to gpu_trace breakdown
+                    ks = full_analysis.get("kernel_summary")
+                    if not ks:
+                        ks = full_analysis.get("gpu_trace", {}).get("kernel_breakdown")
+                    result.kernel_summary = ks
+                    result.mem_time_summary = full_analysis.get("mem_time_summary")
+
+                    if save_nsys_csv and save_nsys_csv_dir:
+                        import shutil
+                        os.makedirs(save_nsys_csv_dir, exist_ok=True)
+
+                        # Copy all CSV files to run directory
+                        for report_name, csv_path in exported_csvs.items():
+                            dst = os.path.join(save_nsys_csv_dir, f"nsys_{report_name}.csv")
+                            shutil.copy2(csv_path, dst)
+                        print(f"  [nsys] {len(exported_csvs)} CSV files saved to {save_nsys_csv_dir}")
+
+                        # Generate comprehensive summary
+                        summary_path = os.path.join(save_nsys_csv_dir, "nsys_summary.txt")
+                        write_nsys_full_summary(full_analysis, summary_path)
+                        print(f"  [nsys] Full summary saved to {summary_path}")
 
         except Exception as e:
             # nsys is optional; don't fail the benchmark

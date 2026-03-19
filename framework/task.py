@@ -40,6 +40,9 @@ class TaskConfig:
     trials: int = 10
     timeout: int = 180
 
+    # Interface mode: "init_compute" (default) or "compute_only"
+    interface_mode: str = "init_compute"
+
     # GPU optimization points this task could benefit from
     gpu_optimization_points: list[str] = field(default_factory=list)
 
@@ -72,6 +75,7 @@ def load_task(task_id: str) -> TaskConfig:
         warmup=data.get("timing", {}).get("warmup", 3),
         trials=data.get("timing", {}).get("trials", 10),
         timeout=data.get("timing", {}).get("timeout", 180),
+        interface_mode=data.get("interface_mode", "init_compute"),
         gpu_optimization_points=data.get("gpu_optimization_points", []),
     )
 
@@ -90,7 +94,7 @@ def get_task_dir(task_id: str) -> str:
     return os.path.join(TASKS_DIR, task_id)
 
 
-def load_prompt(task_id: str, level: int) -> str:
+def load_prompt(task_id: str, level: int, split_kernels: bool = False) -> str:
     """
     Load prompt for a task at a given difficulty level (1, 2, or 3).
 
@@ -104,7 +108,7 @@ def load_prompt(task_id: str, level: int) -> str:
     tmpl_path = os.path.join(task_dir, "prompt_template.yaml")
     if os.path.exists(tmpl_path):
         from .generate_prompt import generate_prompt
-        return generate_prompt(task_id, level)
+        return generate_prompt(task_id, level, split_kernels=split_kernels)
 
     # Fallback: static markdown files
     prompt_path = os.path.join(task_dir, f"prompt_l{level}.md")

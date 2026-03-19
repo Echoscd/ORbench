@@ -73,6 +73,55 @@ static int harness_main(int argc, char** argv) {
     snprintf(path, sizeof(path), "%s/input.bin", data_dir);
     TaskData data = load_input_bin(path);
 
+#ifdef ORBENCH_COMPUTE_ONLY
+    // ============ compute_only mode ============
+    // Every trial does setup + run + cleanup.
+    // This prevents hiding computation in init (e.g. CUDA Graph recording).
+    float init_ms = 0.0f;
+
+    // Warmup (full cycle each time)
+    for (int w = 0; w < warmup; w++) {
+        void* ctx = task_setup(&data, data_dir);
+        SYNC();
+        task_run(ctx);
+        SYNC();
+        task_cleanup(ctx);
+    }
+
+    // Timed trials: setup + run together
+    float total_ms = 0.0f, min_ms = 1e9f, max_ms = 0.0f;
+    void* last_ctx = NULL;
+
+    for (int t = 0; t < num_trials; t++) {
+        TIMER_START();
+        void* ctx = task_setup(&data, data_dir);
+        SYNC();
+        task_run(ctx);
+        SYNC();
+        TIMER_STOP();
+
+        float ms = TIMER_ELAPSED_MS();
+        total_ms += ms;
+        if (ms < min_ms) min_ms = ms;
+        if (ms > max_ms) max_ms = ms;
+
+        // Keep last ctx for validate, cleanup previous
+        if (last_ctx) task_cleanup(last_ctx);
+        last_ctx = ctx;
+    }
+
+    float solve_mean_ms = (num_trials > 0) ? total_ms / (float)num_trials : 0.0f;
+
+    // Validate: last_ctx already has results from last trial
+    if (do_validate && last_ctx) {
+        snprintf(path, sizeof(path), "%s/output.txt", data_dir);
+        task_write_output(last_ctx, path);
+    }
+    if (last_ctx) task_cleanup(last_ctx);
+
+#else
+    // ============ init_compute mode (default, unchanged) ============
+
     // 2. Setup: task_io parses requests, calls solution_init (TIMED)
     TIMER_START();
     void* ctx = task_setup(&data, data_dir);
@@ -108,28 +157,6 @@ static int harness_main(int argc, char** argv) {
 
     float solve_mean_ms = (num_trials > 0) ? total_ms / (float)num_trials : 0.0f;
 
-    // Print legacy TIME_MS (solve only, for backward compat)
-    printf("TIME_MS: %.3f\n", solve_mean_ms);
-    printf("INIT_MS: %.3f\n", init_ms);
-    fprintf(stderr, "Init:  %.3f ms\n", init_ms);
-    fprintf(stderr, "Solve: mean=%.3f ms, min=%.3f ms, max=%.3f ms (%d trials)\n",
-            solve_mean_ms, min_ms, max_ms, num_trials);
-
-    // 4b. Write detailed timing to timing.json (machine-readable)
-    snprintf(path, sizeof(path), "%s/timing.json", data_dir);
-    {
-        FILE* tf = fopen(path, "w");
-        if (tf) {
-            fprintf(tf, "{"
-                    "\"init_ms\":%.3f,"
-                    "\"mean_ms\":%.3f,\"min_ms\":%.3f,\"max_ms\":%.3f,"
-                    "\"num_trials\":%d"
-                    "}\n",
-                    init_ms, solve_mean_ms, min_ms, max_ms, num_trials);
-            fclose(tf);
-        }
-    }
-
     // 5. Validate: run once and write output.txt
     if (do_validate) {
         task_run(ctx);
@@ -140,6 +167,36 @@ static int harness_main(int argc, char** argv) {
 
     // 6. Cleanup
     task_cleanup(ctx);
+#endif
+
+    // Output (shared by both modes)
+    printf("TIME_MS: %.3f\n", solve_mean_ms);
+    printf("INIT_MS: %.3f\n", init_ms);
+    fprintf(stderr, "Init:  %.3f ms\n", init_ms);
+    fprintf(stderr, "Solve: mean=%.3f ms, min=%.3f ms, max=%.3f ms (%d trials)\n",
+            solve_mean_ms, min_ms, max_ms, num_trials);
+
+    // Write detailed timing to timing.json (machine-readable)
+    snprintf(path, sizeof(path), "%s/timing.json", data_dir);
+    {
+        FILE* tf = fopen(path, "w");
+        if (tf) {
+            fprintf(tf, "{"
+                    "\"interface_mode\":\"%s\","
+                    "\"init_ms\":%.3f,"
+                    "\"mean_ms\":%.3f,\"min_ms\":%.3f,\"max_ms\":%.3f,"
+                    "\"num_trials\":%d"
+                    "}\n",
+#ifdef ORBENCH_COMPUTE_ONLY
+                    "compute_only",
+#else
+                    "init_compute",
+#endif
+                    init_ms, solve_mean_ms, min_ms, max_ms, num_trials);
+            fclose(tf);
+        }
+    }
+
     free_task_data(&data);
     return 0;
 }

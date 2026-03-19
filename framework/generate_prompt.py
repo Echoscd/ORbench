@@ -113,7 +113,19 @@ def _build_input_sizes_table(task: TaskConfig) -> str:
 #  Main assembly
 # ═══════════════════════════════════════════════════════════════
 
-def generate_prompt(task_id: str, level: int) -> str:
+SPLIT_KERNELS_GUIDANCE = """\
+## Kernel Decomposition (Profiling-Friendly Mode)
+
+You are encouraged to **split the implementation into multiple CUDA kernels** instead of one monolithic kernel.
+This makes it easier to profile and optimize each stage. Guidelines:
+- Use **separate kernels** for distinct pipeline phases (e.g., build grid / generate pairs / sort+dedup / narrow-phase SAT / write-back).
+- Keep each kernel focused, with clear inputs/outputs.
+- Add a short comment above each `__global__` kernel describing its responsibility, e.g. `// KERNEL: build grid entries`.
+- Minimize atomics and global synchronization; prefer prefix-sums + deterministic write offsets when possible.
+"""
+
+
+def generate_prompt(task_id: str, level: int, split_kernels: bool = False) -> str:
     """
     Assemble a complete prompt for *task_id* at difficulty *level* (1, 2, or 3).
 
@@ -144,6 +156,11 @@ def generate_prompt(task_id: str, level: int) -> str:
 
     # 4. Constraints (generic)
     constraints_section = f"\n### Constraints\n\n{GENERIC_CONSTRAINTS}\n"
+
+    # 4b. Optional split-kernel guidance (profiling-friendly)
+    split_section = ""
+    if split_kernels:
+        split_section = f"\n\n{SPLIT_KERNELS_GUIDANCE}\n"
 
     # 5. Input sizes (auto-generated from task.json)
     sizes_table = _build_input_sizes_table(task)
@@ -194,6 +211,7 @@ def generate_prompt(task_id: str, level: int) -> str:
         + task_desc_section
         + interface_section
         + constraints_section
+        + split_section
         + sizes_section
         + output_contract_section
         + algo_section

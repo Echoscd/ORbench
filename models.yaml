@@ -33,6 +33,18 @@ providers:
       max_retries: 5
       backoff_base: 3.0
 
+  # OpenRouter (OpenAI-compatible)
+  # Set env: OPENROUTER_API_KEY=...
+  openrouter:
+    api_base: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    rate_limit:
+      requests_per_minute: 60
+      tokens_per_minute: 150000
+    retry:
+      max_retries: 3
+      backoff_base: 2.0
+
   google:
     api_base: "https://generativelanguage.googleapis.com/v1beta"
     api_key_env: "GOOGLE_API_KEY"
@@ -66,6 +78,17 @@ models:
     max_tokens: 16384
     cost_per_1k_input: 0.0025
     cost_per_1k_output: 0.01
+    supports_system_prompt: true
+
+  # Example OpenRouter model entry (adjust model_string as needed)
+  # Common OpenRouter naming format: "<provider>/<model>"
+  gpt-4o-openrouter:
+    provider: openrouter
+    model_string: "openai/gpt-4o"
+    max_tokens: 16384
+    # Cost varies by OpenRouter routing; keep 0 if you don't want cost accounting.
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
     supports_system_prompt: true
 
   gpt-4.1:
@@ -120,6 +143,18 @@ models:
     supports_system_prompt: true
     note: "preview model"
 
+  # Gemini via OpenRouter (uses OPENROUTER_API_KEY, OpenAI-compatible endpoint)
+  # OpenRouter model ids are like: google/gemini-...
+  gemini-3.1-pro-preview-openrouter:
+    provider: openrouter
+    model_string: "google/gemini-3.1-pro-preview"
+    # Keep this modest to avoid OpenRouter preflight "can only afford X tokens" (402).
+    max_tokens: 65536
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    supports_system_prompt: true
+    note: "Gemini routed via OpenRouter"
+
   gemini-3-flash:
     provider: google
     model_string: "gemini-3.1-pro-preview"
@@ -128,4 +163,12 @@ models:
     cost_per_1k_output: 0.0006
     supports_system_prompt: true
     note: "preview model"
+  
+  kimi-k2.5-openrouter:
+    provider: openrouter
+    model_string: "moonshotai/kimi-k2.5"
+    max_tokens: 65536
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.0
+    supports_system_prompt: true
 

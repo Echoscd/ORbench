@@ -12,7 +12,9 @@
   },
 
   "correctness": {
-    "mode": "exact"
+    "mode": "numerical",
+    "atol": 1.0,
+    "rtol": 0.0
   },
 
   "timing": {

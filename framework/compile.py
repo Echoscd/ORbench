@@ -68,11 +68,18 @@ def compile_solution(
     cmd = [
         "nvcc", "-O2", f"-arch={arch}",
         "-I", include_dir,
+    ]
+
+    # compute_only mode: pass macro to harness
+    if task.interface_mode == "compute_only":
+        cmd.append("-DORBENCH_COMPUTE_ONLY")
+
+    cmd.extend([
         harness_path,
         task_io_path,
         src_in_build,
         "-o", exe_path,
-    ]
+    ])
 
     # Add extra flags from task config
     if task.extra_build_flags:

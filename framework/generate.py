@@ -12,6 +12,7 @@ import os
 import re
 import json
 import argparse
+from datetime import datetime
 from typing import Optional
 
 from .task import load_task, load_prompt, ORBENCH_ROOT
@@ -97,6 +98,7 @@ def generate_solutions(
     api_key: str = None,
     api_base: str = None,
     run_name: str = None,
+    split_kernels: bool = False,
 ) -> list[str]:
     """
     Generate CUDA solutions for a task using the legacy single-model path.
@@ -104,10 +106,11 @@ def generate_solutions(
     Returns list of file paths to saved solutions.
     """
     task = load_task(task_id)
-    prompt = load_prompt(task_id, level)
+    prompt = load_prompt(task_id, level, split_kernels=split_kernels)
 
     if run_name is None:
-        run_name = f"{model.replace('/', '_')}_l{level}"
+        date_tag = datetime.now().strftime("%Y%m%d")
+        run_name = f"{model.replace('/', '_')}_l{level}_{date_tag}"
 
     run_dir = os.path.join(ORBENCH_ROOT, "runs", run_name, task_id)
     os.makedirs(run_dir, exist_ok=True)
@@ -157,6 +160,7 @@ def generate_with_registry(
     registry=None,
     run_name: str = None,
     temperature: float = 0.7,
+    split_kernels: bool = False,
 ) -> dict:
     """
     Generate a single sample using the LLM registry.
@@ -170,7 +174,7 @@ def generate_with_registry(
     if registry is None:
         registry = LLMRegistry()
 
-    prompt = load_prompt(task_id, level)
+    prompt = load_prompt(task_id, level, split_kernels=split_kernels)
 
     if run_name is None:
         run_name = f"{model_id}_l{level}"
@@ -234,6 +238,8 @@ def main():
     parser.add_argument("--api-key", default=os.environ.get("LLM_API_KEY"))
     parser.add_argument("--api-base", default=None)
     parser.add_argument("--run-name", default=None)
+    parser.add_argument("--split", action="store_true",
+                        help="Encourage the LLM to split the solution into multiple kernels (profiling-friendly)")
     args = parser.parse_args()
 
     generate_solutions(
@@ -244,6 +250,7 @@ def main():
         api_key=args.api_key,
         api_base=args.api_base,
         run_name=args.run_name,
+        split_kernels=args.split,
     )
 
 

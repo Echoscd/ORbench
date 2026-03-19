@@ -10,6 +10,7 @@ import os
 import json
 import time
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -71,6 +72,7 @@ class GenerationScheduler:
     def __init__(self, registry: LLMRegistry, runs_dir: str):
         self.registry = registry
         self.runs_dir = runs_dir
+        self._split_kernels = False
 
         # One rate limiter per provider (shared across models of same provider)
         self._limiters: dict[str, RateLimiter] = {}
@@ -99,7 +101,8 @@ class GenerationScheduler:
     # ── Path helpers ─────────────────────────────────────────
 
     def _run_name(self, job: GenerationJob) -> str:
-        return f"{job.model_id}_l{job.level}"
+        date_tag = datetime.now().strftime("%Y%m%d")
+        return f"{job.model_id}_l{job.level}_{date_tag}"
 
     def _output_path(self, job: GenerationJob) -> str:
         return os.path.join(
@@ -128,7 +131,7 @@ class GenerationScheduler:
         try:
             # Load prompt
             from ..task import load_prompt
-            prompt = load_prompt(job.task_id, job.level)
+            prompt = load_prompt(job.task_id, job.level, split_kernels=self._split_kernels)
 
             # Build resilient client
             model_cfg = self.registry.get_model_config(job.model_id)
@@ -243,6 +246,7 @@ class GenerationScheduler:
         max_workers_per_provider: int = 3,
         progress_file: Optional[str] = None,
         temperature: float = 0.7,
+        split_kernels: bool = False,
     ) -> list[GenerationResult]:
         """
         Execute all jobs with per-provider concurrency control.
@@ -252,6 +256,7 @@ class GenerationScheduler:
         """
         # Initialize log file for this batch
         llm_logger.init_logger(tag="batch")
+        self._split_kernels = bool(split_kernels)
 
         results: list[GenerationResult] = []
         total = len(jobs)

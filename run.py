@@ -101,6 +101,7 @@ def cmd_generate(args):
         api_key=api_key,
         api_base=config.llm.api_base,
         run_name=args.run_name,
+        split_kernels=args.split,
     )
 
 
@@ -164,6 +165,7 @@ def cmd_generate_batch(args):
         max_workers_per_provider=args.workers,
         progress_file=progress_file,
         temperature=args.temperature,
+        split_kernels=args.split,
     )
 
     # Print generated run names for subsequent eval
@@ -364,6 +366,41 @@ def cmd_compare(args):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  agent-multiturn
+# ═══════════════════════════════════════════════════════════════
+
+def cmd_agent_multiturn(args):
+    from framework.agent.multiturn import run_multiturn
+    from framework.config import load_config, set_config
+
+    # Load config and merge CLI args (reuse existing config system)
+    cli_args = {
+        "arch": args.arch,
+        "gpus": args.gpus,
+        "timeout": args.timeout,
+        "no_nsys": args.no_nsys,
+    }
+    config = load_config(cli_args=cli_args)
+    set_config(config)
+
+    summary = run_multiturn(
+        model_id=args.model,
+        task_id=args.task,
+        level=args.level,
+        turns=args.turns,
+        repeats=args.repeats,
+        run_name=args.run_name,
+        temperature=args.temperature,
+        split=args.split,
+        device_id=0,
+        arch=config.gpu.arch,
+        run_nsys=not args.no_nsys,
+        save_nsys_csv=args.save_nsys,
+    )
+    print(f"[agent] done. run_name={summary.run_name} task={summary.task_id} records={len(summary.records)}")
+
+
+# ═══════════════════════════════════════════════════════════════
 #  main / CLI
 # ═══════════════════════════════════════════════════════════════
 
@@ -383,6 +420,8 @@ def main():
     p_gen.add_argument("--api-key", default=None)
     p_gen.add_argument("--api-base", default=None, help="API base URL (overrides config.yaml)")
     p_gen.add_argument("--run-name", default=None)
+    p_gen.add_argument("--split", action="store_true",
+        help="Encourage the LLM to split the solution into multiple kernels (profiling-friendly)")
 
     # ── generate-batch (new, multi-model) ──
     p_batch = subparsers.add_parser("generate-batch",
@@ -405,6 +444,8 @@ def main():
         help="Tag for progress file naming")
     p_batch.add_argument("--yes", action="store_true",
         help="Skip cost confirmation prompt")
+    p_batch.add_argument("--split", action="store_true",
+        help="Encourage the LLM to split the solution into multiple kernels (profiling-friendly)")
 
     # ── eval ──
     p_eval = subparsers.add_parser("eval", help="Evaluate generated solutions")
@@ -430,6 +471,24 @@ def main():
     p_cmp.add_argument("--output", default=None,
         help="Save comparison JSON to file")
 
+    # ── agent-multiturn ──
+    p_agent = subparsers.add_parser("agent-multiturn",
+        help="Multi-turn agent loop: generate → eval/profile → feedback → regenerate")
+    p_agent.add_argument("--model", required=True, help="Model ID from models.yaml (e.g., gpt-4o-openrouter)")
+    p_agent.add_argument("--task", required=True, help="Task ID (e.g., collision_detection)")
+    p_agent.add_argument("--level", type=int, default=2, choices=[1, 2, 3])
+    p_agent.add_argument("--turns", type=int, default=2, help="Number of turns per repeat")
+    p_agent.add_argument("--repeats", type=int, default=1, help="Repeat the whole multi-turn experiment N times")
+    p_agent.add_argument("--temperature", type=float, default=0.7)
+    p_agent.add_argument("--run-name", default=None, help="Override run name under runs/")
+    p_agent.add_argument("--split", action="store_true",
+        help="Encourage splitting into multiple kernels (profiling-friendly)")
+    p_agent.add_argument("--arch", default=None, help="GPU architecture (overrides config.yaml)")
+    p_agent.add_argument("--gpus", type=int, default=None, help="(reserved) number of GPUs; agent currently uses device 0")
+    p_agent.add_argument("--timeout", type=int, default=None, help="Timeout in seconds (overrides config.yaml)")
+    p_agent.add_argument("--no-nsys", action="store_true", help="Skip nsys profiling")
+    p_agent.add_argument("--save-nsys", action="store_true", help="Save nsys CSV and summary per turn")
+
     args = parser.parse_args()
 
     if args.command == "list":
@@ -444,6 +503,8 @@ def main():
         cmd_analyze(args)
     elif args.command == "compare":
         cmd_compare(args)
+    elif args.command == "agent-multiturn":
+        cmd_agent_multiturn(args)
     else:
         parser.print_help()
 

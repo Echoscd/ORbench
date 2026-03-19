@@ -47,22 +47,22 @@ void solution_compute(int num_requests,
         if (src >= 0 && src < g_V) g_dist_buf[src] = 0.0f;
 
         for (int round = 0; round < g_V - 1; round++) {
-            int updated = 0;
+        int updated = 0;
             for (int u = 0; u < g_V; u++) {
                 float du = g_dist_buf[u];
-                if (du >= INF_VAL) continue;
+            if (du >= INF_VAL) continue;
                 int start = g_row_offsets[u];
                 int end   = g_row_offsets[u + 1];
-                for (int idx = start; idx < end; idx++) {
+            for (int idx = start; idx < end; idx++) {
                     float nd = du + g_weights[idx];
                     if (nd < g_dist_buf[g_col_indices[idx]]) {
                         g_dist_buf[g_col_indices[idx]] = nd;
-                        updated = 1;
-                    }
+                    updated = 1;
                 }
             }
-            if (!updated) break;
         }
+        if (!updated) break;
+    }
 
         distances[r] = (tgt >= 0 && tgt < g_V) ? g_dist_buf[tgt] : INF_VAL;
     }

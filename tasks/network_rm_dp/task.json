@@ -1,0 +1,39 @@
+{
+  "task_id": "network_rm_dp",
+  "interface_mode": "compute_only",
+  "name": "Network Revenue Management Dynamic Programming",
+  "category": "dynamic_programming",
+  "difficulty": 4,
+  "tags": ["backward_induction", "value_iteration", "revenue_management",
+           "state_space", "double_buffer", "persistent_kernel"],
+
+  "input_sizes": {
+    "small":  {"m": 2, "n": 4, "T": 100, "L": 10, "cap_max": 20, "seed": 42},
+    "medium": {"m": 3, "n": 8, "T": 300, "L": 20, "cap_max": 30, "seed": 42},
+    "large":  {"m": 4, "n": 12, "T": 500, "L": 30, "cap_max": 40, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0.1,
+    "rtol": 1e-4
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 300
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "state_parallel_backward_induction",
+    "shared_memory_V_cache",
+    "warp_level_menu_reduction",
+    "persistent_kernel_all_timesteps",
+    "double_buffer_V_tables",
+    "precomputed_state_transitions"
+  ]
+}

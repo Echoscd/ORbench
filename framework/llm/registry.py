@@ -21,6 +21,7 @@ CLIENT_MAP: dict[str, type] = {
     "anthropic": AnthropicClient,
     "openai":    OpenAIClient,
     "deepseek":  OpenAIClient,
+    "openrouter": OpenAIClient,
     "google":    GoogleClient,
 }
 
