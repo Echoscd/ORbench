@@ -2,29 +2,47 @@
 
 **通用 CPU→CUDA 加速 Benchmark：评测大语言模型的 GPU 编程能力**
 
-ORBench 评测大语言模型能否将通用 CPU 代码自动改写为高效的 CUDA kernel。与现有 benchmark 不同——KernelBench 只关注 ML 算子，ComputeEval 只考察 CUDA 语法正确性——ORBench 覆盖经典算法，包括图遍历、动态规划、排序、组合优化等。
+ORBench 评测大语言模型能否将通用 CPU 代码自动改写为高效的 CUDA kernel。与现有 benchmark 不同——KernelBench 只关注 ML 算子，ComputeEval 只考察 CUDA 语法正确性——ORBench 覆盖经典算法，包括图遍历、动态规划、计算几何、组合优化等。
+
+## 当前任务
+
+| Task ID | 领域 | 难度 | 并行维度 | 接口模式 | GPU 瓶颈 |
+|---------|------|------|----------|----------|----------|
+| bellman_ford | 图算法 | ★★ | V=500K 节点 | init_compute | 同步开销 |
+| collision_detection | 计算几何 | ★★★ | C=30M 对 | init_compute | 负载均衡 |
+| network_rm_dp | 运筹/动态定价 | ★★★★ | S=2.8M 状态 | compute_only | 状态空间大小 |
 
 ## 快速开始
 
 ```bash
-# 1. 列出所有可用任务
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 列出所有可用任务和模型
 python run.py list
 
-# 2. 生成测试数据
-python tasks/bellman_ford/gen_data.py large tasks/bellman_ford/data/large
+# 3. 生成测试数据
+python tasks/bellman_ford/gen_data.py small tasks/bellman_ford/data/small --with-expected
+python tasks/network_rm_dp/gen_data.py small tasks/network_rm_dp/data/small --with-expected
 
-# 3. 用 LLM 生成 CUDA 代码（需要 API key）
+# 4. 用 LLM 生成 CUDA 代码（需要 API key，run name 自动带日期）
 export LLM_API_KEY="your-api-key"
 python run.py generate --task bellman_ford --model claude-sonnet-4-20250514 --level 2 --samples 3
 
-# 4. 评测（需要 NVIDIA GPU）
-python run.py eval --run claude-sonnet-4-20250514_l2 --arch sm_89
+# 5. 批量多模型生成
+python run.py generate-batch --models claude-sonnet-4 gpt-4o --tasks bellman_ford --levels 2 --samples 5
 
-# 5. 评测 + 保存完整 nsys 分析报告
-python run.py eval --run claude-sonnet-4-20250514_l2 --arch sm_89 --save-nsys
+# 6. 评测（需要 NVIDIA GPU）
+python run.py eval --run claude-sonnet-4_l2_20260319 --arch sm_89
 
-# 6. 查看结果
-python run.py analyze --run claude-sonnet-4-20250514_l2
+# 7. 多轮 Agent 实验（生成→评测→反馈→改进）
+python run.py agent-multiturn --model gemini-3.1-pro-preview --task network_rm_dp --level 2 --turns 10
+
+# 8. 查看结果
+python run.py analyze --run claude-sonnet-4_l2_20260319
+
+# 9. 跨模型对比
+python run.py compare --runs claude-sonnet-4_l2_20260319 gpt-4o_l2_20260319
 ```
 
 ## 项目结构
@@ -32,152 +50,118 @@ python run.py analyze --run claude-sonnet-4-20250514_l2
 ```
 ORBench/
 ├── run.py                      # 统一 CLI 入口
-├── config.yaml                 # 全局配置（模型、GPU 架构、超时等）
+├── models.yaml                 # LLM 提供商 & 模型配置
+├── config.yaml                 # 全局配置（GPU 架构、超时等）
 ├── requirements.txt
 │
 ├── framework/                  # 评测框架
-│   ├── task.py                 # 任务加载、TaskConfig 数据类
+│   ├── task.py                 # 任务加载、TaskConfig（含 interface_mode）
 │   ├── generate.py             # 调 LLM API 生成 .cu 代码
-│   ├── compile.py              # nvcc 编译（支持 CPU 并行）
-│   ├── validate.py             # 多规模正确性验证（对比 .bin 文件）
+│   ├── generate_prompt.py      # 从 prompt_template.yaml 组装分级 prompt
+│   ├── compile.py              # nvcc 编译（自动传 -DORBENCH_COMPUTE_ONLY）
+│   ├── validate.py             # 正确性验证（对比 expected_output.txt）
 │   ├── benchmark.py            # CUDA Event 计时 + nsys 集成
-│   ├── profile.py              # nsys 自动化：profile → 导出全部 CSV → 分析
+│   ├── profile.py              # nsys 自动化：profile → CSV → 分析
 │   ├── batch_eval.py           # 多 GPU 批量调度（spawn 进程隔离）
-│   └── analyze.py              # 结果汇总：fast_p、按类别统计
+│   ├── analyze.py              # 结果汇总
+│   ├── harness_common.h        # 通用 benchmark 骨架（支持双接口模式）
+│   ├── harness_gpu.cu          # GPU 计时封装（CUDA Event）
+│   ├── harness_cpu.c           # CPU 计时封装（clock_gettime）
+│   ├── orbench_io.h            # 二进制 input.bin 读取（C）
+│   ├── orbench_io_py.py        # 二进制 input.bin 写入（Python）
+│   ├── llm/
+│   │   ├── registry.py         # 多 LLM 提供商注册、客户端管理
+│   │   └── scheduler.py        # 批量生成调度（并发控制、断点续跑）
+│   └── agent/
+│       ├── multiturn.py        # 多轮 Agent 流水线
+│       ├── prompts.py          # 反馈 prompt 构建
+│       └── plot_metrics.py     # Agent 指标可视化（CSV + PNG）
 │
-├── tasks/                      # 任务定义（以 bellman_ford 为模板）
-│   └── bellman_ford/
-│       ├── task.json           # 任务元信息（难度、输入规模、容差、优化点）
-│       ├── prompt_l1.md        # Level 1 prompt：CPU 代码 + 算法描述 + GPU 优化提示
-│       ├── prompt_l2.md        # Level 2 prompt：CPU 代码 + 算法描述
-│       ├── prompt_l3.md        # Level 3 prompt：仅 CPU 代码
-│       ├── LLM_input.cu        # LLM 填写模板（与 cpu_reference.cu 结构完全一致）
-│       ├── cpu_reference.cu    # CPU 基准实现
-│       ├── gen_data.py         # 测试数据生成器（输出 .bin 二进制文件）
-│       ├── compare.py          # 正确性验证（二进制浮点对比 + 容差）
-│       └── data/
-│           └── large/          # 预生成的测试数据
-│               ├── input.txt           # V E source seed
-│               ├── row_offsets.bin     # CSR 图结构（int32）
-│               ├── col_indices.bin
-│               ├── weights.bin         # 边权（float32）
-│               ├── expected_dist.bin   # CPU 参考答案（float32）
-│               └── meta.json           # 文件格式说明
+├── tasks/                      # 任务定义
+│   └── <task_id>/
+│       ├── task.json           # 元信息（难度、规模、容差、interface_mode）
+│       ├── prompt_template.yaml# Prompt 模板（L1/L2/L3 分级 hints）
+│       ├── cpu_reference.c     # CPU 基准（纯计算，无 I/O）
+│       ├── task_io.cu          # GPU I/O 适配层（harness ↔ solution 桥接）
+│       ├── task_io_cpu.c       # CPU I/O 适配层
+│       ├── gen_data.py         # 数据生成 + CPU 求解 expected output
+│       └── data/{small,medium,large}/
+│           ├── input.bin               # 二进制输入（ORBench 格式）
+│           ├── requests.txt            # 请求描述
+│           ├── expected_output.txt     # CPU 参考答案
+│           ├── cpu_time_ms.txt         # CPU 基准耗时
+│           └── timing.json             # 最近一次运行的计时数据
 │
-├── runs/                       # LLM 生成的代码 + 评测结果
-│   └── <run_name>/
-│       └── bellman_ford/
+├── runs/                       # 实验结果（自动带日期）
+│   └── <model>_l<level>_<date>/
+│       └── <task_id>/
 │           ├── sample_0.cu             # LLM 生成的代码
-│           ├── nsys_sample_0/          # nsys 分析结果（--save-nsys 时生成）
-│           │   ├── nsys_summary.txt
-│           │   ├── nsys_cuda_gpu_trace.csv
-│           │   ├── nsys_cuda_gpu_kern_sum.csv
-│           │   ├── nsys_cuda_gpu_mem_time_trace.csv
-│           │   ├── nsys_cuda_gpu_mem_time_sum.csv
-│           │   ├── nsys_cuda_gpu_mem_size_sum.csv
-│           │   ├── nsys_cuda_api_trace.csv
-│           │   └── nsys_cuda_api_sum.csv
 │           └── ...
 │
 └── cache/                      # 编译缓存
 ```
 
-## 评测流程
+## 三层架构
 
 ```
-任务定义 → LLM 生成代码 → nvcc 编译 → 正确性验证 → 性能计时 → 结果分析
-                                          ↓                ↓
-                                    对比 .bin 文件    CUDA Event（必须）
-                                    多规模测试        nsys trace（可选）
+harness (harness_common.h)      — 通用：计时、warmup、validate 控制
+  ↓
+task_io (task_io.cu)            — 任务特定：解析输入、格式化输出
+  ↓
+solution (LLM 生成)             — 纯计算：LLM 只写算法逻辑
 ```
 
-### LLM 的任务
+LLM 只需实现 `solution_init` + `solution_compute`（init_compute 模式）或 `solution_compute` + `solution_free`（compute_only 模式），无需处理文件 I/O、计时逻辑。
 
-LLM 收到 `LLM_input.cu` 模板，只需填写两个 `>>> LLM CODE START/END <<<` 之间的部分：
+## 双接口模式
 
-1. **CUDA kernel 和 device 函数**
-2. **`gpu_bellman_ford()` 函数体**：cudaMalloc → cudaMemcpy → kernel launch → 结果回拷 → cudaFree
+| 模式 | 适用场景 | 计时范围 | 防作弊 |
+|------|----------|----------|--------|
+| `init_compute` | 输入数据大（>1MB） | 只计时 compute | 允许 init 预处理 |
+| `compute_only` | 输入数据小（<1MB） | 计时 setup+compute | 防止把计算藏进 init |
 
-模板中的 main 函数负责：读 .bin 输入、warmup 3 次、CUDA Event 计时 10 次、打印 `GPU_TIME_MS`、`--validate` 模式写 output.bin。LLM 不需要碰这些。
+通过 `task.json` 的 `"interface_mode"` 字段控制，编译时自动传 `-DORBENCH_COMPUTE_ONLY` 宏。
 
-### 手动编译运行
+## Prompt 分级
 
-```bash
-# 编译
-nvcc -O2 -arch=sm_89 -o solution LLM_output.cu
+| Level | 包含内容 | 目标 |
+|-------|----------|------|
+| L1 | 任务描述 + 接口 + 算法背景 + CPU 代码 + 详细 GPU 优化提示 | 测试代码实现能力 |
+| L2 | 任务描述 + 接口 + CPU 代码 + 简要提示 | 测试优化策略选择 |
+| L3 | 任务描述 + 接口 + CPU 代码 | 测试独立分析能力 |
 
-# 计时（秒出）
-./solution tasks/bellman_ford/data/large
-
-# 验证正确性
-./solution tasks/bellman_ford/data/large --validate
-
-# nsys profiling
-nsys profile -t cuda -s none -o report ./solution tasks/bellman_ford/data/large
-nsys stats --force-export=true --report cuda_gpu_trace --format csv -o report report.nsys-rep
-```
+Prompt 由 `prompt_template.yaml` + `generate_prompt.py` 自动组装，CPU reference 代码自动注入。
 
 ## 评测指标
 
 | 指标 | 说明 | 来源 |
 |------|------|------|
 | 编译通过率 | 生成代码能否 nvcc 编译 | nvcc |
-| 正确率 | 所有输入规模上结果正确 | compare .bin 文件 |
-| 端到端加速比 | CPU 时间 / GPU 端到端时间（含同步开销） | CUDA Event |
-| 纯 Kernel 加速比 | CPU 时间 / 纯 kernel 执行时间 | nsys trace |
+| 正确率 | 所有输入规模上结果正确 | 对比 expected_output.txt |
+| total_ms | init + solve 总耗时 | timing.json |
+| 端到端加速比 | CPU 时间 / GPU 端到端时间 | CUDA Event |
+| 纯 Kernel 加速比 | CPU 时间 / 纯 kernel 时间 | nsys trace |
 | GPU 利用率 | kernel 时间 / 端到端时间 | nsys trace |
-| fast_p | 同时正确且加速比 ≥ p 的比例 | 计算得出 |
 
-## nsys 输出的完整信息
+## 多轮 Agent 模式
 
-使用 `--save-nsys` 时，框架导出 7 种 nsys 报告：
-
-| 报告 | 内容 |
-|------|------|
-| cuda_gpu_trace | 每个 kernel/memcpy 的逐条记录：开始时间、持续时间、grid/block 配置 |
-| cuda_gpu_kern_sum | kernel 按名字汇总：总时间、平均时间、调用次数 |
-| cuda_gpu_mem_time_trace | 每次 memcpy/memset 的方向、大小、吞吐量 |
-| cuda_gpu_mem_time_sum | 内存操作按类型汇总（H2D/D2H/memset） |
-| cuda_gpu_mem_size_sum | 内存操作按数据量汇总 |
-| cuda_api_trace | CPU 端每次 CUDA API 调用（cudaMalloc/cudaFree/cudaLaunch 各花多久） |
-| cuda_api_sum | CUDA API 按函数名汇总 |
-
-同时生成 `nsys_summary.txt` 可读摘要，包含 GPU 利用率、kernel 逐项分析、内存传输统计、CUDA API 开销分布。
-
-## CLI 参数说明
-
-```bash
-# 评测命令
-python run.py eval --run <run_name> [选项]
-
-选项：
-  --arch sm_89          GPU 架构（sm_89=L20X/4090, sm_80=A100）
-  --gpus 2              用几块 GPU 并行评测
-  --timeout 180         单任务超时（秒）
-  --no-nsys             跳过 nsys profiling（最快）
-  --save-nsys           保存完整 nsys CSV 和摘要到 run 目录
-  --tasks bellman_ford  只评测指定任务
 ```
+Turn 0: 基础 prompt → LLM 生成代码 → 编译 → 评测 → nsys profile
+Turn 1: 上轮代码 + 评测反馈 + nsys 分析 → LLM 改进 → 重新评测
+Turn N: 持续迭代优化
+```
+
+每轮自动记录 `total_ms`、`kernel_time_ms`、`speedup_e2e` 等指标，生成 `agent_metrics.csv` 和 `agent_metrics.png` 趋势图。
 
 ## 新增任务
 
-1. 复制 `tasks/bellman_ford/` 为模板
-2. 修改 `task.json`（难度、输入规模、容差）
-3. 编写 `prompt_l1/l2/l3.md`
-4. 编写 `cpu_reference.cu`（从 .bin 读入、CPU 计时）
-5. 编写 `LLM_input.cu`（模板，标记 LLM 填写区域）
-6. 编写 `gen_data.py`（生成 .bin 输入 + expected_dist.bin 输出）
-7. 编写 `compare.py`（二进制浮点对比）
-8. 运行 `gen_data.py` 生成测试数据
-
-## 设计决策
-
-- **独立 .cu 文件**（非 PyTorch 扩展）：更贴近真实 GPGPU 开发，便于 nsys 直接 profile
-- **spawn 进程隔离**：每个评测任务在独立子进程中运行，CUDA context 互不干扰
-- **二进制 IO**：输入输出用 .bin 文件，避免 50 万个浮点数 printf 的 IO 瓶颈
-- **两级计时**：CUDA Event 拿绝对数字，nsys 拿时间分解（kernel/memcpy/空闲占比）
-- **NCU 可选**：在 K8s/Docker 容器中不可用（需要 SYS_ADMIN），框架不依赖它
-- **LLM_input.cu 模板**：与 cpu_reference.cu 结构完全一致，LLM 只填算法部分，计时由框架控制
+1. 在 `tasks/` 下创建目录
+2. 编写 `task.json`（设置 `interface_mode`、难度、输入规模、容差）
+3. 编写 `prompt_template.yaml`（任务描述、接口、分级 hints）
+4. 编写 `cpu_reference.c`（纯计算，无文件 I/O）
+5. 编写 `task_io.cu` 和 `task_io_cpu.c`（I/O 适配层）
+6. 编写 `gen_data.py`（生成 input.bin + expected_output.txt）
+7. 运行 `gen_data.py` 生成 small/medium/large 数据
 
 ## 环境要求
 
@@ -185,4 +169,4 @@ python run.py eval --run <run_name> [选项]
 - CUDA Toolkit 12.0+（nvcc）
 - NVIDIA GPU
 - nsys（推荐，用于 kernel 级分析）
-- pip install: numpy pandas pyyaml anthropic openai tqdm
+- `pip install -r requirements.txt`
