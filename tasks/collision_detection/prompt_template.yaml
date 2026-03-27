@@ -24,7 +24,7 @@ task_description: |
 
 interface: |
   ```c
-  extern "C" void solution_init(
+  extern "C" void solution_compute(
       int N,                      // number of polygons
       int total_verts,            // total vertices across all polygons
       int world_size_x100,        // world dimension * 100 (decode: / 100.0f)
@@ -32,13 +32,11 @@ interface: |
       const int* poly_offsets,    // host, [N+1], CSR offsets into vertex arrays
       const float* vertices_x,   // host, [total_verts], x-coordinates
       const float* vertices_y,   // host, [total_verts], y-coordinates
-      const float* aabb           // host, [N*4], per-polygon [min_x, min_y, max_x, max_y]
-  );
-
-  extern "C" void solution_compute(
-      int N,                      // number of polygons
+      const float* aabb,          // host, [N*4], per-polygon [min_x, min_y, max_x, max_y]
       int* counts                 // host, [N], output: collision count per polygon
   );
+
+  extern "C" void solution_free(void);
   ```
 
 input_size_notes: |
@@ -77,7 +75,7 @@ algorithm_background: |
   Complexity: O(na × nb) per pair for SAT, O(C × V²) total for C candidate pairs.
 
 hints_l2: |
-  - Copy polygon data to GPU **once** in `solution_init`; reuse across calls
+  - Copy polygon data to GPU at the start of `solution_compute`
   - Broad phase: build grid on GPU, use spatial hashing for cell assignment
   - Narrow phase: one thread per candidate pair, each running SAT independently
   - Use `atomicAdd` to increment collision counts
@@ -85,7 +83,7 @@ hints_l2: |
 
 hints_l1: |
   ### 1. Persistent GPU Data
-  Copy `poly_offsets`, `vertices_x`, `vertices_y`, `aabb` to device in `solution_init`.
+  Copy `poly_offsets`, `vertices_x`, `vertices_y`, `aabb` to device at the start of `solution_compute`.
   Pre-allocate output `counts` buffer on device.
 
   ### 2. Grid Construction (GPU)

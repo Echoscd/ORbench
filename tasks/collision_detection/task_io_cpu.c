@@ -5,16 +5,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern void solution_init(int N, int total_verts,
-                          int world_size_x100, int cell_size_x100,
-                          const int* poly_offsets,
-                          const float* vertices_x, const float* vertices_y,
-                          const float* aabb);
+extern void solution_compute(int N, int total_verts,
+                             int world_size_x100, int cell_size_x100,
+                             const int* poly_offsets,
+                             const float* vertices_x, const float* vertices_y,
+                             const float* aabb,
+                             int* counts);
 
-extern void solution_compute(int N, int* counts);
+extern void solution_free(void);
 
 typedef struct {
     int N;
+    int total_verts;
+    int world_size_x100;
+    int cell_size_x100;
+    const int* poly_offsets;
+    const float* vertices_x;
+    const float* vertices_y;
+    const float* aabb;
     int* counts;
 } TaskIOContext;
 
@@ -34,18 +42,24 @@ void* task_setup(const TaskData* data, const char* data_dir) {
         return NULL;
     }
 
-    solution_init(N, total_verts, world_size_x100, cell_size_x100,
-                  poly_offsets, vertices_x, vertices_y, aabb);
-
     TaskIOContext* ctx = (TaskIOContext*)calloc(1, sizeof(TaskIOContext));
     ctx->N = N;
+    ctx->total_verts = total_verts;
+    ctx->world_size_x100 = world_size_x100;
+    ctx->cell_size_x100 = cell_size_x100;
+    ctx->poly_offsets = poly_offsets;
+    ctx->vertices_x = vertices_x;
+    ctx->vertices_y = vertices_y;
+    ctx->aabb = aabb;
     ctx->counts = (int*)calloc((size_t)N, sizeof(int));
     return ctx;
 }
 
 void task_run(void* test_data) {
     TaskIOContext* ctx = (TaskIOContext*)test_data;
-    solution_compute(ctx->N, ctx->counts);
+    solution_compute(ctx->N, ctx->total_verts, ctx->world_size_x100, ctx->cell_size_x100,
+                     ctx->poly_offsets, ctx->vertices_x, ctx->vertices_y, ctx->aabb,
+                     ctx->counts);
 }
 
 void task_write_output(void* test_data, const char* output_path) {
@@ -60,6 +74,7 @@ void task_write_output(void* test_data, const char* output_path) {
 void task_cleanup(void* test_data) {
     if (!test_data) return;
     TaskIOContext* ctx = (TaskIOContext*)test_data;
+    solution_free();
     free(ctx->counts);
     free(ctx);
 }

@@ -1,0 +1,161 @@
+# Gittins Index for Bernoulli Multi-Armed Bandit — Prompt Template
+
+task_description: |
+  Compute the Gittins Index table for a Bernoulli Multi-Armed Bandit.
+
+  The Gittins Index ν(α, β) is the key quantity in the optimal solution
+  to the multi-armed bandit problem (Gittins, 1979). Given a Bernoulli
+  arm with Beta(α, β) posterior and discount factor a, ν(α, β) is the
+  "fair price" of this arm — the constant per-period reward that makes
+  a decision-maker indifferent between continuing to pull this arm and
+  switching to a standard arm paying that constant.
+
+  **Formal definition (retirement value formulation):**
+
+  ν(α, β) is the unique λ where V(α, β, λ) = 0, with:
+
+    V(α', β', λ) = max(0, R(α',β') - λ + a × [p × V(α'+1, β', λ) + (1-p) × V(α', β'+1, λ)])
+
+  where R(α', β') = (α'+1)/(α'+β'+2) is the posterior mean, p = R(α', β'),
+  and V = 0 at the truncation boundary α'+β' ≥ N.
+
+  **Algorithm:** Layer-by-layer backward recursion + binary search.
+  States (α, β) with α+β = k form "layer k". Process from k = N-1 (boundary)
+  down to k = 0. Within each layer, binary search over λ to find ν for each state.
+
+  **State encoding:** index(α, β) = k*(k+1)/2 + α where k = α+β.
+  Total states S = N*(N+1)/2.
+
+interface: |
+  ```c
+  // compute_only interface: ALL work happens inside solution_compute,
+  // including cudaMalloc, H2D, kernels, D2H.
+
+  extern "C" void solution_compute(
+      int N,               // truncation parameter (state space layers: 0..N-1)
+      int a_x10000,        // discount factor × 10000 (e.g., 9500 → a=0.95)
+      int S,               // state space size = N*(N+1)/2
+      int num_bisect,      // binary search iterations (e.g., 40)
+      float* V_out         // HOST, [S], output: ν(α,β) for all states
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - **small**: N=50, a=0.90, S=1,275 states
+  - **medium**: N=150, a=0.95, S=11,325 states
+  - **large**: N=300, a=0.99, S=45,150 states
+  - State encoding: `V_out[k*(k+1)/2 + α]` = ν(α, β) where k = α + β
+  - Decode discount factor: `float a = (float)a_x10000 / 10000.0f`
+  - R(α, β) = (α+1.0f) / (α+β+2.0f) (posterior mean of Beta distribution)
+  - Transition: with probability p = R(α,β), go to (α+1, β); with probability 1-p, go to (α, β+1)
+  - Boundary: when α+β ≥ N, the process is truncated (V = 0)
+
+output_contract: |
+  - `V_out[s]` = Gittins Index ν(α, β) where s = k*(k+1)/2 + α, k = α+β
+  - All values should be in [0, 1] (probabilities from Beta posterior)
+  - Boundary layer (k = N-1): ν(α, β) = (α+1)/(α+β+2) exactly
+  - Interior layers: ν(α, β) > R(α, β) (exploration premium)
+  - Tolerance: atol=1e-4, rtol=1e-4
+  - `solution_compute` must **synchronize** before returning
+  - All input pointers are HOST; you manage cudaMalloc/cudaMemcpy yourself
+
+algorithm_background: |
+  **Layer-by-Layer Backward Recursion with Binary Search Calibration**
+
+  1. **State space**: Triangular grid. Layer k = {(α, β) : α+β = k, α ≥ 0, β ≥ 0}.
+     Layer k has (k+1) states. Total S = N*(N+1)/2.
+
+  2. **Boundary** (layer N-1): ν(α, β) = R(α, β) = (α+1)/(α+β+2).
+     No room for exploration, so ν equals the immediate expected reward.
+
+  3. **Interior layers** (k = N-2 down to 0): For each state (α, β):
+
+     **Binary search** over λ ∈ [0, 1]:
+     - For candidate λ, compute V(α, β, λ) via backward induction over the
+       "forward region" — all states reachable from (α, β): {(α+r, β+s) : r+s = 1..M-1}
+       where M = N - k.
+     - At each reachable state (α', β') with already-known ν(α', β'):
+       if ν(α', β') < λ → V = 0 (the arm would "retire" here)
+       else → V = max(0, R(α',β') - λ + a × [p×V_success + (1-p)×V_failure])
+     - If V(α, β, λ) > 0 → ν(α, β) > λ (arm is worth more than λ)
+     - If V(α, β, λ) ≤ 0 → ν(α, β) ≤ λ
+
+  4. **Complexity**: Each state's binary search does O(B × M²) work where M = N-k
+     and B = num_bisect. Total: O(B × N⁴ / 6).
+
+hints_l2: |
+  - Process layers N-1 down to 0 sequentially; within each layer, states are independent → parallel
+  - Each state does independent binary search (40 iterations) + small backward induction
+  - For layer k, the forward region per state has M*(M+1)/2 entries where M = N-k
+  - The ν table (S floats) should live on GPU; update layer by layer
+  - Use device memory for the per-state V arrays during backward induction
+
+hints_l1: |
+  ### 1. Data Layout and Upload
+  Allocate a device array `d_nu[S]` for the Gittins index table. No input tensors needed;
+  all data is derived from scalar parameters (N, a, num_bisect).
+
+  ### 2. Boundary Layer Kernel
+  Simple kernel: one thread per state at layer N-1 (N states).
+  ```cuda
+  // Thread i: α = i, β = N-1-i
+  d_nu[idx(α, β)] = (α + 1.0f) / (α + β + 2.0f);
+  ```
+
+  ### 3. Interior Layer Kernel (one thread per state)
+  For each layer k = N-2 down to 0, launch (k+1) threads:
+  ```cuda
+  __global__ void compute_layer(int k, int N, float a, int num_bisect,
+                                 float* d_nu) {
+      int α = threadIdx.x + blockIdx.x * blockDim.x;
+      if (α > k) return;
+      int β = k - α;
+      int M = N - k;
+
+      // Allocate local V array (M×M, upper triangle)
+      // For M ≤ ~50, can use registers or local memory
+      // For larger M, use dynamically allocated device memory
+
+      float lo = 0.0f, hi = 1.0f;
+      for (int iter = 0; iter < num_bisect; iter++) {
+          float lam = (lo + hi) * 0.5f;
+          // Backward induction over d = M-1 down to 1
+          // Read d_nu[] for states at layers > k (already computed)
+          // ...
+          if (v_root > 1e-12f) lo = lam;
+          else hi = lam;
+      }
+      d_nu[idx(α, β)] = (lo + hi) * 0.5f;
+  }
+  ```
+
+  ### 4. Memory Management for V Arrays
+  Each thread needs a private V array of size M*(M+1)/2.
+  - **Small M (≤ 50):** Use thread-local arrays (stack/registers).
+  - **Large M (> 50):** Pre-allocate a pool of device memory, assign slices to threads.
+  - Alternative: use shared memory if M is small enough and only one state per block.
+
+  ### 5. Layer Synchronization
+  Between layers, `cudaDeviceSynchronize()` or use a persistent kernel with
+  `cooperative_groups::this_grid().sync()`:
+  ```cuda
+  for (int k = N-2; k >= 0; k--) {
+      compute_layer<<<(k+2+255)/256, 256>>>(k, N, a, num_bisect, d_nu);
+      cudaDeviceSynchronize();
+  }
+  ```
+
+  ### 6. Optimization: Shared Memory for ν Table
+  States in the same layer frequently read ν values from the same higher layers.
+  Load frequently-accessed portions of d_nu into shared memory:
+  ```cuda
+  __shared__ float s_nu[SHARED_SIZE];
+  // Cooperatively load relevant portion of d_nu
+  ```
+
+  ### 7. Optimization: Coarsened Binary Search
+  Instead of 40 iterations of binary search per state, start with a coarse grid
+  of λ values, evaluate V for all, then refine. This amortizes the backward
+  induction cost across multiple λ probes.

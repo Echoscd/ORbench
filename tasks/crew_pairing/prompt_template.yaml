@@ -33,8 +33,8 @@ task_description: |
 
 interface: |
   ```c
-  // Called once before timing. Receive host-side flight leg data.
-  extern "C" void solution_init(
+  // Called multiple times (warmup + timed). MUST be idempotent.
+  extern "C" void solution_compute(
       int N,                        // number of flight legs
       int num_stations,             // number of unique stations
       int base_station,             // station ID of the base (home hub)
@@ -47,14 +47,11 @@ interface: |
       int max_duty_min,             // 840 (14h)
       int max_block_min,            // 600 (10h)
       int max_legs_duty,            // 6
-      int min_rest_min              // 540 (9h)
-  );
-
-  // Called multiple times (warmup + timed). MUST be idempotent.
-  extern "C" void solution_compute(
-      int N,                        // number of flight legs
+      int min_rest_min,             // 540 (9h)
       int* assignments              // host, N ints (output): pairing group ID for each leg
   );
+
+  extern "C" void solution_free(void);
   ```
 
 input_size_notes: |
@@ -95,7 +92,7 @@ algorithm_background: |
 # -- Hints by level --
 
 hints_l2: |
-  - Copy all leg data to GPU **once** in `solution_init`; reuse across calls
+  - Copy all leg data to GPU at the start of `solution_compute`
   - The pairing generation step is embarrassingly parallel: start one search per leg
   - Use a greedy set cover approach on GPU: select best pairing, mark covered legs, repeat
   - Pre-compute a connection graph (which legs can follow which) to speed up search
@@ -103,7 +100,7 @@ hints_l2: |
 hints_l1: |
   ### 1. Persistent GPU Data
   Copy `dep_minutes`, `arr_minutes`, `dep_stations`, `arr_stations` to device memory
-  in `solution_init`. Pre-allocate output buffers. Reuse across all `solution_compute` calls.
+  at the start of `solution_compute`. Pre-allocate output buffers.
 
   ### 2. Connection Graph
   Pre-compute for each leg which legs can potentially follow it (same station,

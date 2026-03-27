@@ -1,0 +1,82 @@
+task_description: |
+  The problem seeks the optimal dynamic pricing policy for a product under a self-exciting demand arrival process (Hawkes process). It is formulated as a continuous-time dynamic program (Hamilton-Jacobi-Bellman equation) and solved numerically using an explicit finite difference scheme.
+  
+  The state variable is the excitement level (accumulated influence of past purchases), and the decision variable is the purchase probability (controlled via price). The numerical solution involves backward induction over time, where at each time step, the optimal price is found by maximizing the expected profit-to-go over a discretized state space, accounting for both continuous decay and discrete jumps in excitement.
+  
+  To increase GPU utilization and test scalability, multiple DP instances with different parameters (e.g., varying decay rates or baseline intensities) are batched together.
+
+interface: |
+  void solution_compute(
+      int batch_size, int J, int N, int num_actions,
+      float h, float tau, float lambda0, float a, float b_param,
+      const float* alpha0, const float* beta,
+      float* U, float* Lambda
+  );
+  void solution_free(void);
+
+input_size_notes: |
+  - `batch_size`: Number of independent problem instances (e.g., 32).
+  - `J`: Number of discrete states for the excitement level (e.g., 5000).
+  - `N`: Number of time steps (e.g., 1000).
+  - `num_actions`: Number of discrete actions to search over (e.g., 100).
+
+output_contract: |
+  - `U` and `Lambda` are pre-allocated 3D arrays of size `[batch_size, J, N]` (flattened).
+  - You must initialize `U[..., N-1] = 0` and `Lambda[..., N-1] = 0`.
+  - For each time step `n` from `N-2` down to `0`, compute `U[..., n]` and `Lambda[..., n]` using the finite difference scheme.
+  - The arrays are passed as host pointers. You must manage device memory allocation, data transfer, and computation.
+  - The testing harness will verify the results at `n=0`, but you should populate the full arrays as requested by the interface.
+
+algorithm_background: |
+  The algorithm solves a 1D HJB equation using an explicit finite difference scheme with backward induction. Let `U` be a 3D array of size `[batch_size, J, N]` and `Lambda` be the same size. Initialize `U[..., N-1] = 0`.
+
+  For each time step `n` from `N-2` down to `0` (sequential):
+    For each batch `b` and state `j` from `0` to `J-1` (parallel):
+      1. Calculate 1-based index `real_j = j + 1` and spatial value `x = real_j * h`.
+      2. Calculate interpolation indices:
+         `bb1 = real_j * (1 - beta[b] * tau)`
+         `bb2 = floor(bb1)`
+         `cc1 = bb1 + (alpha0[b] / h) * (1 - beta[b] * tau)`
+         `cc2 = floor(cc1)`
+      3. Interpolate `Vbb` from `U[b, :, n+1]`:
+         If `bb2 == 0`:
+           `deltabb = U[b, 1, n+1] - U[b, 0, n+1]`
+           `Vbb = U[b, 0, n+1] - (1 - bb1) * deltabb`
+         Else:
+           `deltabb = U[b, bb2, n+1] - U[b, bb2-1, n+1]`
+           `Vbb = U[b, bb2-1, n+1] + (bb1 - bb2) * deltabb`
+      4. Interpolate `Vcc` from `U[b, :, n+1]`:
+         If `cc1 >= J`:
+           `deltacc = U[b, J-1, n+1] - U[b, J-2, n+1]`
+           `Vcc = U[b, J-1, n+1] + (cc1 - J) * deltacc`
+         Else:
+           `safe_cc2 = max(1, cc2)`
+           `deltacc = U[b, safe_cc2, n+1] - U[b, safe_cc2-1, n+1]`
+           `Vcc = U[b, safe_cc2-1, n+1] + (cc1 - safe_cc2) * deltacc`
+      5. Find optimal action:
+         `max_A = -1e30`
+         `best_lambda = lambda0`
+         For `pp` from `0` to `num_actions - 1`:
+           `lambda_val = lambda0 + pp * 0.001`
+           `A_val = lambda_val * ((a - lambda_val) / b_param + Vcc - Vbb)`
+           If `A_val > max_A`:
+             `max_A = A_val`
+             `best_lambda = lambda_val`
+      6. Update state:
+         `Lambda[b, j, n] = best_lambda`
+         `U[b, j, n] = Vbb + (x + 0.001 * x * x + 1) * tau * max_A`
+
+hints_l2: |
+  - The outer loop over time `n` is strictly sequential.
+  - The inner loops over `b` and `j` are completely independent and should be mapped to CUDA blocks and threads.
+  - `U` and `Lambda` are large. To optimize memory bandwidth, you can use double buffering for `U` in device memory (only keeping `U_curr` and `U_next`), but you still need to write the final results to the full `U` and `Lambda` arrays in global memory.
+  - Alternatively, write directly to the full `U` and `Lambda` arrays in device memory, but ensure coalesced memory accesses.
+  - The action search loop can be executed sequentially within each thread, as `num_actions` is small.
+
+hints_l1: |
+  - Allocate device memory for `alpha0`, `beta`, `U`, and `Lambda` at the start of `solution_compute`.
+  - In `solution_compute`, copy `alpha0` and `beta` to the device.
+  - Launch a kernel for the initialization `U[..., N-1] = 0` and `Lambda[..., N-1] = 0`.
+  - Launch a kernel for each time step `n` from `N-2` down to `0`.
+  - The kernel should take `n` as an argument and compute the values for `U[b, j, n]` and `Lambda[b, j, n]`.
+  - After the loop, copy the full `U` and `Lambda` arrays back to the host.

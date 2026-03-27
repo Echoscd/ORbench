@@ -1,0 +1,45 @@
+task_description: |
+  In portfolio optimization, estimating the covariance matrix of asset returns is critical but challenging due to noise and finite-sample errors. Long-History Principal Component Analysis (LH-PCA) mitigates these issues by extracting latent risk factors over an extended data history.
+  
+  This task involves running a Monte Carlo simulation where, for each independent trial, a return matrix is processed. The algorithm normalizes the returns, computes a time-wise correlation matrix, extracts the top K principal components, and reconstructs the return matrix into factor-driven and idiosyncratic components. Finally, it estimates a regularized covariance matrix and solves a linear system to find the weights of the Global Minimum Variance Portfolio (GMVP).
+
+interface: |
+  void solution_compute(int S, int T, int N, int K, const float* R, float* w);
+  void solution_free(void);
+
+input_size_notes: |
+  - S: Number of independent simulations (e.g., 4 to 32)
+  - T: Number of time steps (e.g., 256 to 1024)
+  - N: Number of assets (e.g., 256 to 2048)
+  - K: Number of principal components (e.g., 4 to 16)
+  - R: 3D tensor of shape (S, T, N) containing asset returns
+  - w: 2D tensor of shape (S, N) to store the computed portfolio weights
+
+output_contract: |
+  The function `solution_compute` must compute the portfolio weights for each simulation and store them in the pre-allocated `w` array. The output `w` should be of shape `(S, N)`.
+
+algorithm_background: |
+  For each simulation s in {0, ..., S-1}:
+  1. Let R^{(s)} be the T x N matrix for simulation s.
+  2. Normalize each column of R^{(s)} by its Euclidean (L2) norm. If a column has a norm of 0, leave it as 0 (or divide by 1.0). Let this normalized matrix be R_norm^{(s)}.
+  3. Compute the T x T matrix M^{(s)} = R_norm^{(s)} * (R_norm^{(s)})^T.
+  4. Find the K eigenvectors of M^{(s)} corresponding to the K largest eigenvalues. Let these eigenvectors form the columns of Phi^{(s)} (shape T x K). Note: Any orthonormal basis for the subspace spanned by the top K eigenvectors is acceptable, as the subsequent projection is invariant to the choice of basis.
+  5. Compute the factor exposures Z^{(s)} = (Phi^{(s)})^T * R^{(s)} (shape K x N).
+  6. Compute the factor returns F^{(s)} = Phi^{(s)} * Z^{(s)} (shape T x N).
+  7. Compute the idiosyncratic returns E^{(s)} = R^{(s)} - F^{(s)} (shape T x N).
+  8. Compute the factor covariance matrix C_F^{(s)} = (1/T) * (F^{(s)})^T * F^{(s)} (shape N x N).
+  9. Compute the idiosyncratic variances V_E^{(s)} as a vector of length N, where the i-th element is (1/T) * sum_{t=1}^T (E^{(s)}_{t, i})^2.
+  10. Compute the estimated covariance matrix Sigma_hat^{(s)} = C_F^{(s)} + diag(V_E^{(s)}).
+  11. Solve the linear system Sigma_hat^{(s)} * x^{(s)} = 1 for x^{(s)} (shape N), where 1 is a vector of ones.
+  12. Compute the final weights w^{(s)} = x^{(s)} / sum_{i=1}^N x^{(s)}_i.
+
+hints_l2: |
+  - Eigendecomposition of large matrices (e.g., 1024x1024) is not natively supported in batched form by cuSOLVER (which only supports batched syevj up to 32x32). You will need to either write a loop over standard cuSOLVER calls or implement a custom solver (e.g., Simultaneous Iteration / Subspace Iteration) which is highly parallelizable and efficient since K is small.
+  - The linear system solve for the portfolio weights involves large matrices (up to 2048x2048), requiring `cublas<t>getrfBatched` or a loop over `cusolverDn<t>potrf`.
+  - Orchestrate cuBLAS and cuSOLVER calls efficiently to minimize host-device synchronization.
+  - Fuse the normalization, idiosyncratic variance computation, and covariance assembly into custom CUDA kernels to save memory bandwidth.
+
+hints_l1: |
+  - Use `cublasSgemm` for the large matrix multiplications (M, Z, F, C_F).
+  - For the eigendecomposition, since you only need the top K eigenvectors and K is small, implementing a custom Simultaneous Iteration (Orthogonal Iteration) kernel or loop using cuBLAS (GEMM + batched QR) can be much faster than full eigendecomposition.
+  - For solving the linear system, since Sigma_hat is symmetric positive definite, Cholesky decomposition (`cusolverDnSpotrf`) is the most efficient method.

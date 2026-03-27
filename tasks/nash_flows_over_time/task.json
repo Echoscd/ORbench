@@ -1,0 +1,22 @@
+{
+  "task_id": "dynamic_traffic_assignment",
+  "name": "Discrete-Time Dynamic Traffic Assignment",
+  "category": "Transportation",
+  "difficulty": 3,
+  "tags": ["simulation", "graphs", "shortest-path"],
+  "interface_mode": "init_compute",
+  "input_sizes": {
+    "small":  {"num_nodes": 100, "num_edges": 400, "num_steps": 1000, "seed": 42},
+    "medium": {"num_nodes": 1000, "num_edges": 4000, "num_steps": 5000, "seed": 42},
+    "large":  {"num_nodes": 5000, "num_edges": 20000, "num_steps": 10000, "seed": 42}
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 1.0,
+    "rtol": 0.01
+  },
+  "timing": {"warmup": 1, "trials": 3, "timeout": 180},
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": ["parallel bellman-ford", "atomicMin with packed 64-bit integers", "kernel fusion"]
+}

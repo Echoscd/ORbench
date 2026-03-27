@@ -1,0 +1,59 @@
+task_description: |
+  A robust Markov Decision Process (MDP) value iteration algorithm where transition probabilities are uncertain and bounded within a hypercube (L-infinity norm).
+  At each iteration, the algorithm computes the worst-case expected value by sorting the next-state values and greedily assigning maximum possible transition probabilities to the lowest values until the probability distribution sums to 1.
+  
+  Given `rew` (S x A), `P_up` (S x A x S), `P_down` (S x A x S), `gamma`, and `T`:
+  1. Initialize `V` as an array of zeros of size `S`.
+  2. For `t` from 0 to `T - 1`:
+     a. Sort `V` in ascending order to get an array of indices `permutation`.
+     b. Initialize `V_next` as an array of zeros of size `S`.
+     c. For each state `s`:
+        i. Initialize `max_Q = -infinity`.
+        ii. For each action `a`:
+            - Calculate `total_P_down = sum_{j=0}^{S-1} P_down[s, a, j]`.
+            - Initialize `run_sum = total_P_down - P_down[s, a, permutation[0]] + P_up[s, a, permutation[0]]`.
+            - Initialize `index = 0`.
+            - While `run_sum < 1.0` and `index < S - 1`:
+                `index += 1`
+                `run_sum += P_up[s, a, permutation[index]] - P_down[s, a, permutation[index]]`
+            - Compute `expected_V = 0.0`.
+            - For `j` from 0 to `index - 1`:
+                `expected_V += P_up[s, a, permutation[j]] * V[permutation[j]]`
+            - `expected_V += (1.0 - (run_sum - P_up[s, a, permutation[index]])) * V[permutation[index]]`
+            - For `j` from `index + 1` to `S - 1`:
+                `expected_V += P_down[s, a, permutation[j]] * V[permutation[j]]`
+            - `Q_sa = rew[s, a] + gamma * expected_V`
+            - `max_Q = max(max_Q, Q_sa)`
+        iii. `V_next[s] = max_Q`
+     d. `V = V_next`
+  3. Return `V`.
+
+interface: |
+  void solution_compute(int S, int A, int T, float gamma, const float* rew, const float* P_up, const float* P_down, float* V);
+  void solution_free(void);
+
+input_size_notes: |
+  - S is the number of states, up to 2000
+  - A is the number of actions, up to 20
+  - T is the number of iterations, up to 500
+  - rew is of size S * A
+  - P_up and P_down are of size S * A * S
+
+output_contract: |
+  - The output array `V` must be filled with the computed values after `T` iterations.
+  - The output array `V` is pre-allocated on the host.
+  - `solution_compute` should allocate device memory, copy the inputs, perform the computation, and copy the result back to the host array `V`.
+
+algorithm_background: |
+  Robust Value Iteration finds the optimal policy for an MDP when the transition probabilities are not known exactly but lie in an uncertainty set.
+  For L-infinity norm (hypercube) uncertainty, the worst-case transition probabilities can be found efficiently by sorting the states by their current value and greedily assigning the maximum possible probability (P_up) to the states with the lowest values, and the minimum possible probability (P_down) to the rest, such that the total probability sums to 1.
+
+hints_l1: |
+  - The sorting step can be done using Thrust or CUB on the GPU.
+  - Since the array to sort is of size S, it can be sorted quickly.
+  - The inner loops over `s` and `a` can be parallelized across GPU threads.
+
+hints_l2: |
+  - Precompute `total_P_down` for each `(s, a)` during initialization to avoid an O(S) reduction inside the hot loop.
+  - Memory coalescing is crucial. Threads for different `(s, a)` access `P_up` and `P_down` using the same sorted `permutation` of indices.
+  - If `P_up` and `P_down` are stored in `[s_prime, s, a]` layout instead of `[s, a, s_prime]`, memory accesses will be perfectly coalesced. Consider transposing the arrays at the start of `solution_compute`.

@@ -1,0 +1,44 @@
+{
+  "suitability_score": 2,
+  "task_id": "motzkin_straus_blp_eval",
+  "task_name": "Motzkin-Straus BLP Formulation Evaluation",
+  "category": "Optimization",
+  "problem_summary": "The paper provides theoretical complexity results for finding locally optimal solutions in Bilevel Linear Optimization Problems (BLPs). It introduces a BLP reformulation of the Motzkin-Straus quadratic program for the maximum clique problem. The extracted task evaluates the objective function and constraint violations for a batch of candidate solutions to this BLP.",
+  "parallelism_analysis": "The paper is purely theoretical and does not propose a computational algorithm. The only viable task is a batch evaluation of candidate solutions for the proposed BLP formulation. This provides parallelism across the batch dimension, but the computation per candidate is minimal.",
+  "scale_analysis": "Evaluating a single candidate requires O(N^2) operations due to a dense matrix-vector multiplication (Ax). For a batch of M candidates, the total complexity is O(M * N^2). While this can scale up, it is essentially a batched GEMV operation rather than a complex OR algorithm.",
+  "concerns": [
+    "The paper is purely theoretical and does not propose any algorithms.",
+    "The extracted task is a trivial batched evaluation of a mathematical formulation.",
+    "The computation reduces to standard BLAS operations (matrix-vector multiplication) and simple element-wise reductions, which does not test complex CUDA programming skills."
+  ],
+  "gpu_optimization_points": [
+    "Batched matrix-vector multiplication",
+    "Parallel reductions for constraint checking",
+    "Memory coalescing for candidate data"
+  ],
+  "suggested_sizes": {
+    "small": {
+      "N": 100,
+      "M": 1000
+    },
+    "medium": {
+      "N": 1000,
+      "M": 10000
+    },
+    "large": {
+      "N": 5000,
+      "M": 100000
+    }
+  },
+  "interface_mode": "init_compute",
+  "difficulty": 1,
+  "tags": [
+    "bilevel optimization",
+    "theoretical",
+    "batch evaluation"
+  ],
+  "algorithm_description": "Given an adjacency matrix A of a graph (size N x N), a penalty parameter mu, and a batch of M candidate solutions (x, q, s) where x and q are vectors of size N and s is a scalar. For each candidate in the batch, compute the leader's objective value: obj = s - mu * sum(min(x_i, q_i)). Also compute the maximum constraint violation among the following constraints: 1) s - (Ax)_i - q_i = 0 for all i, 2) sum(x_i) - 1 = 0, 3) 0 <= q_i <= 1, 4) x_i >= 0, 5) s >= 0.",
+  "input_data_description": "An integer N (graph size), an integer M (batch size), a float mu (penalty parameter), a 1D array of size N*N representing the flattened adjacency matrix A, and 1D arrays of size M*N for x and q, and size M for s.",
+  "output_data_description": "Two 1D arrays of size M: one containing the computed objective values, and one containing the maximum constraint violation for each candidate.",
+  "reference_code_snippet": "s* - \\mu e^\\top t* = x*^\\top A x* + x*^\\top q* - \\mu e^\\top t*"
+}

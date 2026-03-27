@@ -1,0 +1,52 @@
+task_description: |
+  The problem is to compute the optimal dynamic pricing policy for a product under a self-exciting demand arrival process (Hawkes process). 
+  The problem is formulated as a continuous-time, continuous-state dynamic program (HJB equation). 
+  We discretize the state space (excitement level x) and time to solve the DP backward in time. 
+  At each time step, for each state, the algorithm must find the optimal purchase probability that maximizes the sum of immediate profit and the expected future profit from the jump in excitement level.
+
+interface: |
+  void solution_compute(
+      int N_x, int N_T, int N_lambda,
+      float dx, float dt, float alpha, float beta, float phi,
+      float c, float a, float gamma, float k,
+      float lambda_min, float lambda_max,
+      float* V_out
+  );
+  void solution_free(void);
+
+input_size_notes: |
+  - N_x: Number of states (up to 100,000)
+  - N_T: Number of time steps (up to 1,000)
+  - N_lambda: Number of lambda values to search (up to 200)
+
+output_contract: |
+  - `V_out` is a pre-allocated host array of size `N_x`.
+  - The function `solution_compute` must compute the final value function `V_prev` at t=0 and store it in `V_out`.
+
+algorithm_background: |
+  1. Initialize the value function array `V_prev` of size N_x with zeros.
+  2. Loop backward in time for N_T steps:
+  3. For each state index i in [0, N_x - 1] (in parallel):
+  4.   Calculate x = i * dx.
+  5.   Calculate the spatial derivative: V_deriv = (i == 0) ? 0.0 : (V_prev[i] - V_prev[i-1]) / dx.
+  6.   Calculate the jump index: idx_alpha = min(i + round(alpha / dx), N_x - 1).
+  7.   Calculate the jump value: V_jump = V_prev[idx_alpha] - V_prev[i].
+  8.   Initialize max_val = -infinity (e.g., -1e30f).
+  9.   For each lambda in the discretized set Lambda (N_lambda values linearly spaced from lambda_min to lambda_max):
+  10.    Calculate val = r(lambda) + lambda * V_jump, where r(lambda) = lambda * (log(a / lambda) - c).
+  11.    If val > max_val, update max_val = val.
+  12.  Update the value function: V_new[i] = V_prev[i] + dt * (-x * beta * V_deriv + (k * x^gamma + phi) * max_val).
+  13. Swap V_prev and V_new pointers.
+  14. After the time loop, copy the final V_prev array to V_out.
+
+hints_l2: |
+  - You can precompute the lambda values and r(lambda) at the start of `solution_compute` and store them in device memory.
+  - The outer loop over time steps is sequential, but the inner loop over states `i` can be parallelized across GPU threads.
+  - Use double buffering for `V_prev` and `V_new` on the device to avoid allocations inside the time loop.
+
+hints_l1: |
+  - Allocate device memory for `V_prev` and `V_new` at the start of `solution_compute`.
+  - In `solution_compute`, launch a kernel for each time step `t`.
+  - In the kernel, each thread computes the update for one state `i`.
+  - Since `V_prev` is read by multiple threads, consider using `__ldg()` or shared memory if appropriate, though L1 cache usually handles this well.
+  - The lambda search loop is small (up to 200 iterations) and can be done sequentially by each thread.

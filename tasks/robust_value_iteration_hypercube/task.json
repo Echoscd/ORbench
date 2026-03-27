@@ -1,0 +1,35 @@
+{
+  "task_id": "robust_value_iteration_hypercube",
+  "name": "Robust Value Iteration (Hypercube Uncertainty)",
+  "category": "Dynamic Programming",
+  "difficulty": 3,
+  "tags": [
+    "Dynamic Programming",
+    "Robust Optimization",
+    "Markov Decision Process",
+    "Value Iteration"
+  ],
+  "interface_mode": "compute_only",
+  "input_sizes": {
+    "small": {"S": 200, "A": 10, "T": 100},
+    "medium": {"S": 1000, "A": 10, "T": 200},
+    "large": {"S": 2000, "A": 20, "T": 500}
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 1e-4,
+    "rtol": 1e-4
+  },
+  "timing": {
+    "warmup": 1,
+    "trials": 3,
+    "timeout": 300
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "Global sorting of the value array V at the start of each iteration.",
+    "Memory coalescing by transposing P_up and P_down to [s_prime, s, a] layout during initialization.",
+    "Precomputing the sum of P_down for each (s, a) during initialization."
+  ]
+}

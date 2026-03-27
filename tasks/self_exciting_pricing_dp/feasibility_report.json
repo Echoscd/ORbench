@@ -1,0 +1,48 @@
+{
+  "suitability_score": 7,
+  "task_id": "self_exciting_pricing_dp",
+  "task_name": "Self-Exciting Dynamic Pricing DP",
+  "category": "Dynamic Programming",
+  "problem_summary": "The problem is to compute the optimal dynamic pricing policy for a product under a self-exciting demand arrival process (Hawkes process). The problem is formulated as a continuous-time, continuous-state dynamic program (HJB equation). We discretize the state space (excitement level x) and time to solve the DP backward in time. At each time step, for each state, the algorithm must find the optimal purchase probability that maximizes the sum of immediate profit and the expected future profit from the jump in excitement level.",
+  "parallelism_analysis": "The state space is discretized into N_x states. At each time step, the value function for all N_x states can be updated independently, providing O(N_x) parallelism. The time steps must be processed sequentially. This is a classic layer-parallel dynamic programming problem, which is highly suitable for GPU execution.",
+  "scale_analysis": "For a fine-grained discretization, N_x can be 10^5 to 10^6, and the number of time steps N_T can be 10^3 to 10^4. The search space for the control variable lambda can be 10^2 to 10^3 discrete values. The total number of inner loop evaluations is N_x * N_T * N_lambda, which can easily exceed 10^{10} operations, making it computationally intensive and CPU-bottlenecked.",
+  "concerns": [
+    "The update equation is a simple finite difference scheme. If dx and dt are not chosen properly, it might be numerically unstable (CFL condition). However, for the benchmark, we can provide parameters that are stable.",
+    "Kernel launch overhead might dominate if N_T is large and kernel execution time is small, requiring advanced CUDA techniques to optimize."
+  ],
+  "gpu_optimization_points": [
+    "Double buffering for the value function arrays to avoid unnecessary memory allocations or copies.",
+    "Fusing the lambda search loop into the state update kernel.",
+    "Using CUDA Graphs or Cooperative Groups to avoid kernel launch overhead for the outer sequential time loop.",
+    "Computing the reward function r(lambda) on the fly or storing it in shared/constant memory to save memory bandwidth."
+  ],
+  "suggested_sizes": {
+    "small": {
+      "N_x": 10000,
+      "N_T": 1000,
+      "N_lambda": 100
+    },
+    "medium": {
+      "N_x": 100000,
+      "N_T": 5000,
+      "N_lambda": 200
+    },
+    "large": {
+      "N_x": 1000000,
+      "N_T": 10000,
+      "N_lambda": 500
+    }
+  },
+  "interface_mode": "init_compute",
+  "difficulty": 2,
+  "tags": [
+    "dynamic programming",
+    "finite difference",
+    "layer-parallel",
+    "pricing"
+  ],
+  "algorithm_description": "1. Initialize the value function array `V_prev` of size N_x with zeros (boundary condition at T).\n2. Loop backward in time for N_T steps:\n3. For each state index i in [0, N_x - 1] (in parallel):\n4.   Calculate x = i * dx.\n5.   Calculate the spatial derivative: V_deriv = (i == 0) ? 0.0 : (V_prev[i] - V_prev[i-1]) / dx.\n6.   Calculate the jump index: idx_alpha = min(i + round(alpha / dx), N_x - 1).\n7.   Calculate the jump value: V_jump = V_prev[idx_alpha] - V_prev[i].\n8.   Initialize max_val = -infinity.\n9.   For each lambda in the discretized set Lambda:\n10.    Calculate val = r(lambda) + lambda * V_jump.\n11.    If val > max_val, update max_val = val.\n12.  Update the value function: V_new[i] = V_prev[i] + dt * (-x * beta * V_deriv + (h(x) + phi) * max_val).\n13. Swap V_prev and V_new pointers.\n14. After the time loop, return the final V_prev array.",
+  "input_data_description": "The input consists of scalar parameters: N_x (number of states), N_T (number of time steps), N_lambda (number of lambda values), dx (state step size), dt (time step size), alpha (jump size), beta (decay rate), phi (base arrival rate), c (marginal cost), a (demand parameter), gamma (exponent for h(x)), k (coefficient for h(x)), lambda_min, and lambda_max.",
+  "output_data_description": "An array of size N_x containing the computed value function at t=0.",
+  "reference_code_snippet": "import numpy as np\n\ndef solve_dp(N_x, N_T, N_lambda, dx, dt, alpha, beta, phi, c, a, gamma, k, lambda_min, lambda_max):\n    V_prev = np.zeros(N_x)\n    V_new = np.zeros(N_x)\n    \n    lambdas = np.linspace(lambda_min, lambda_max, N_lambda)\n    r_lambdas = lambdas * (np.log(a / lambdas) - c)\n    \n    alpha_idx_shift = int(round(alpha / dx))\n    \n    for t in range(N_T):\n        for i in range(N_x):\n            x = i * dx\n            V_deriv = 0.0 if i == 0 else (V_prev[i] - V_prev[i-1]) / dx\n            \n            idx_alpha = min(i + alpha_idx_shift, N_x - 1)\n            V_jump = V_prev[idx_alpha] - V_prev[i]\n            \n            # Find max over lambdas\n            vals = r_lambdas + lambdas * V_jump\n            max_val = np.max(vals)\n            \n            h_x = k * (x ** gamma)\n            \n            V_new[i] = V_prev[i] + dt * (-x * beta * V_deriv + (h_x + phi) * max_val)\n            \n        # Swap\n        V_prev, V_new = V_new, V_prev\n        \n    return V_prev"
+}

@@ -1,0 +1,39 @@
+{
+  "task_id": "thompson_sampling",
+  "interface_mode": "compute_only",
+  "name": "Thompson Sampling Monte Carlo Regret Estimation",
+  "category": "stochastic_simulation",
+  "difficulty": 3,
+  "tags": ["monte_carlo", "beta_sampling", "bandit", "RNG",
+           "embarrassingly_parallel", "register_pressure"],
+
+  "input_sizes": {
+    "small":  {"N": 10,  "T": 10000,  "M": 1000,   "seed": 42},
+    "medium": {"N": 50,  "T": 50000,  "M": 10000,  "seed": 42},
+    "large":  {"N": 100, "T": 100000, "M": 5000,   "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 5.0,
+    "rtol": 0.02
+  },
+
+  "timing": {
+    "warmup": 2,
+    "trials": 5,
+    "timeout": 600
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "one_thread_per_simulation",
+    "warp_cooperative_simulation",
+    "shared_memory_arm_states",
+    "efficient_beta_sampling",
+    "register_pressure_management",
+    "block_local_reduction_for_counts"
+  ]
+}

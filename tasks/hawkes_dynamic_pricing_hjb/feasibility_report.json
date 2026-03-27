@@ -1,0 +1,52 @@
+{
+  "suitability_score": 7,
+  "task_id": "hawkes_dynamic_pricing_hjb",
+  "task_name": "Dynamic Pricing under Hawkes Process (HJB PDE Solver)",
+  "category": "Dynamic Programming",
+  "problem_summary": "The problem seeks the optimal dynamic pricing policy for a product under a self-exciting demand arrival process (Hawkes process). It is formulated as a continuous-time dynamic program (Hamilton-Jacobi-Bellman equation) and solved numerically using an explicit finite difference scheme. The state variable is the excitement level (accumulated influence of past purchases), and the decision variable is the purchase probability (controlled via price). The numerical solution involves backward induction over time, where at each time step, the optimal price is found by maximizing the expected profit-to-go over a discretized state space, accounting for both continuous decay and discrete jumps in excitement.",
+  "parallelism_analysis": "The backward induction over time is inherently sequential. However, at each time step, the computation for each state (excitement level) is completely independent and can be parallelized. Furthermore, the search for the optimal action (price/lambda) at each state can also be parallelized, though a sequential search within each thread is often sufficient. To increase GPU utilization and test scalability, multiple DP instances with different parameters (e.g., varying decay rates or baseline intensities) can be batched together, adding an embarrassingly parallel outer dimension.",
+  "scale_analysis": "In the original paper's code, the state space size is J=5000, time steps N=6001, and there are 197 discrete actions. This takes a few seconds on a CPU. For GPU benchmarking, the state space and time steps can be scaled up significantly, or multiple instances can be batched. A large batched instance (e.g., 64 batches of J=50000) will require millions of independent state evaluations per time step, making it highly computationally intensive and memory-bandwidth bound.",
+  "concerns": [
+    "The sequential time loop requires N kernel launches (e.g., 6000+ launches), which could incur significant CPU-GPU overhead if not optimized.",
+    "If the batch size is 1 and J is small, the GPU may be underutilized."
+  ],
+  "gpu_optimization_points": [
+    "Mapping the state space J (and batch dimension) to 1D or 2D CUDA grids.",
+    "Using double buffering for the value function U to save memory (only keeping U_next and U_curr in fast memory, while streaming the policy Lambda to global memory).",
+    "Using CUDA Graphs to minimize the overhead of the thousands of sequential kernel launches.",
+    "Ensuring coalesced memory accesses when reading interpolated values (Vbb, Vcc) from the previous time step."
+  ],
+  "suggested_sizes": {
+    "small": {
+      "batch_size": 1,
+      "J": 5000,
+      "N": 6000,
+      "num_actions": 200
+    },
+    "medium": {
+      "batch_size": 16,
+      "J": 10000,
+      "N": 10000,
+      "num_actions": 500
+    },
+    "large": {
+      "batch_size": 64,
+      "J": 50000,
+      "N": 20000,
+      "num_actions": 1000
+    }
+  },
+  "interface_mode": "init_compute",
+  "difficulty": 2,
+  "tags": [
+    "dynamic_programming",
+    "pde",
+    "finite_difference",
+    "pricing",
+    "batched"
+  ],
+  "algorithm_description": "The algorithm solves a 1D HJB equation using an explicit finite difference scheme with backward induction. Let U be a 3D array of size [batch_size, J, N] and Lambda be the same size. Initialize U[..., N-1] = 0.\n\nFor each time step n from N-2 down to 0 (sequential):\n  For each batch b and state j from 0 to J-1 (parallel):\n    1. Calculate 1-based index real_j = j + 1 and spatial value x = real_j * h.\n    2. Calculate interpolation indices:\n       bb1 = real_j * (1 - beta[b] * tau)\n       bb2 = floor(bb1)\n       cc1 = bb1 + (alpha0[b] / h) * (1 - beta[b] * tau)\n       cc2 = floor(cc1)\n    3. Interpolate Vbb from U[b, :, n+1]:\n       If bb2 == 0:\n         deltabb = U[b, 1, n+1] - U[b, 0, n+1]\n         Vbb = U[b, 0, n+1] - (1 - bb1) * deltabb\n       Else:\n         deltabb = U[b, bb2, n+1] - U[b, bb2-1, n+1]\n         Vbb = U[b, bb2-1, n+1] + (bb1 - bb2) * deltabb\n    4. Interpolate Vcc from U[b, :, n+1]:\n       If cc1 >= J:\n         deltacc = U[b, J-1, n+1] - U[b, J-2, n+1]\n         Vcc = U[b, J-1, n+1] + (cc1 - J) * deltacc\n       Else:\n         deltacc = U[b, cc2, n+1] - U[b, cc2-1, n+1]\n         Vcc = U[b, cc2-1, n+1] + (cc1 - cc2) * deltacc\n    5. Find optimal action:\n       max_A = -infinity\n       best_lambda = lambda0\n       For pp from 0 to num_actions - 1:\n         lambda_val = lambda0 + pp * 0.001\n         A_val = lambda_val * ((a - lambda_val) / b_param + Vcc - Vbb)\n         If A_val > max_A:\n           max_A = A_val\n           best_lambda = lambda_val\n    6. Update state:\n       Lambda[b, j, n] = best_lambda\n       U[b, j, n] = Vbb + (x + 0.001 * x * x + 1) * tau * max_A",
+  "input_data_description": "Scalars: J, N, num_actions, h (e.g., 0.01), tau (e.g., 0.1), lambda0 (e.g., 0.196), a (e.g., 0.392), b_param (e.g., 0.392). Arrays of size batch_size: alpha0 (e.g., ~0.1), beta (e.g., ~0.11).",
+  "output_data_description": "Two 3D arrays U and Lambda of size [batch_size, J, N] containing the value function and optimal policy at each state and time step.",
+  "reference_code_snippet": "for n=N-1:-1:1\n    for j=1:J\n        bb1=j*(1-beta*tau);bb2=floor(bb1);\n        cc1=j*(1-beta*tau)+alpha0/h*(1-beta*tau);cc2=floor(cc1);\n        if bb2==0\n        deltabb=U(2,n+1)-U(1,n+1);\n        Vbb=U(1,n+1)-(1-bb1)*deltabb;\n        else\n        deltabb=U(bb2+1,n+1)-U(bb2,n+1);\n        Vbb=U(bb2,n+1)+(bb1-bb2)*deltabb;\n        end\n        if cc1>=J\n            deltacc=U(J,n+1)-U(J-1,n+1); Vcc=U(J,n+1)+(cc1-J)*deltacc;\n        else\n            deltacc=U(cc2+1,n+1)-U(cc2,n+1); Vcc=U(cc2,n+1)+(cc1-cc2)*deltacc;\n        end\n        A=zeros(197,1);\n        for pp=1:197\n            lambda=lambda0+(pp-1)*0.001;\n             A(pp)=lambda*((a-lambda)/b+Vcc-Vbb);\n        end\n            lambda_max=lambda0+(min(find(A==max(A)))-1)*0.001;\n            Lambda(j,n)=lambda_max;\n             U(j,n)=Vbb+(j*h+0.001*j*h*j*h+1)*tau*max(A);\n    end\nend"
+}

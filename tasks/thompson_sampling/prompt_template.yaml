@@ -1,0 +1,132 @@
+# Thompson Sampling Monte Carlo — Prompt Template
+
+task_description: |
+  Estimate the expected cumulative regret of Thompson Sampling for Bernoulli multi-armed bandits
+  via large-scale Monte Carlo simulation.
+
+  Given `N` arms with known true Bernoulli means `mu[i]`, run `M` independent simulations of
+  Thompson Sampling, each lasting `T` time steps. In each simulation:
+  1. Maintain per-arm success/failure counts (S_i, F_i), initialized to (0, 0).
+  2. At each step, sample θ_i ~ Beta(S_i + 1, F_i + 1) for each arm, pick arm with max θ.
+  3. Observe reward ~ Bernoulli(mu[chosen_arm]), update counts.
+  4. Accumulate regret: mu* - mu[chosen_arm] (where mu* = max of all mu).
+
+  Output the average regret and average pull counts across all M simulations.
+
+  Each simulation is **completely independent** — no communication between simulations.
+  This is embarrassingly parallel: assign one GPU thread (or warp) per simulation.
+
+interface: |
+  ```c
+  // compute_only interface: ALL work happens here (cudaMalloc, H2D, kernels, D2H).
+  // The entire function is timed.
+  extern "C" void solution_compute(
+      int N,                        // number of arms
+      int T,                        // time steps per simulation
+      int M,                        // number of independent simulations
+      const float* arm_means,       // HOST, [N], true Bernoulli means mu[i] in (0,1)
+      uint64_t seed,                // random seed for reproducibility
+      float* avg_regret_out,        // HOST, [1], output: average cumulative regret
+      float* avg_counts_out         // HOST, [N], output: average pull count per arm
+  );
+
+  // Optional: release GPU resources (called after timing).
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - **small**: N=10 arms, T=10K steps, M=1K simulations → 10^8 Beta samples
+  - **medium**: N=50 arms, T=50K steps, M=10K simulations → 2.5×10^10 Beta samples
+  - **large**: N=100 arms, T=100K steps, M=5K simulations → 5×10^10 Beta samples
+  - Arm means: mu[0]=0.5 (best arm), others in [0.1, 0.4]
+  - Each simulation's RNG should be seeded deterministically from (seed, simulation_index)
+  - Beta(α,β) sampling: use Gamma ratio method: X~Gamma(α), Y~Gamma(β), return X/(X+Y)
+
+output_contract: |
+  - `avg_regret_out[0]` = average cumulative regret across M simulations (should be > 0)
+  - `avg_counts_out[i]` = average number of times arm i was pulled (sum should ≈ T)
+  - Tolerance: `atol=5.0, rtol=0.02` (accounts for different RNG implementations)
+  - `solution_compute` must **synchronize** before returning
+  - All input pointers are HOST. You must cudaMemcpy them to device yourself.
+  - The best arm should have the highest avg_counts
+
+algorithm_background: |
+  **Thompson Sampling (Bernoulli Bandits)**
+
+  Thompson Sampling maintains a Beta posterior for each arm's success probability.
+  At each step, it samples from each posterior and plays the arm with highest sample.
+
+  ```
+  Initialize: S_i = 0, F_i = 0 for all arms
+
+  For t = 1 to T:
+    For i = 1 to N:
+      θ_i ~ Beta(S_i + 1, F_i + 1)
+    Play arm i* = argmax_i θ_i
+    Observe reward r ~ Bernoulli(mu[i*])
+    If r == 1: S[i*] += 1, else F[i*] += 1
+  ```
+
+  **Beta sampling via Gamma ratio**: Beta(α,β) = Gamma(α) / (Gamma(α) + Gamma(β))
+
+  **Gamma sampling** (Marsaglia-Tsang method, for α ≥ 1):
+  ```
+  d = α - 1/3,  c = 1/sqrt(9d)
+  repeat:
+    x ~ Normal(0,1)
+    v = (1 + cx)³
+    if v > 0 and log(U) < x²/2 + d(1 - v + log(v)):
+      return d * v
+  ```
+  For α = 1: Gamma(1) = -log(U) (exponential distribution).
+
+hints_l2: |
+  - M simulations are completely independent → one GPU thread per simulation
+  - Each thread maintains N arms' (S_i, F_i) state — register pressure for large N
+  - Beta sampling is the computation bottleneck: each step needs N × 2 Gamma samples
+  - Use a fast GPU-friendly RNG (cuRAND philox, or custom xoshiro)
+  - Aggregate counts with block-local reduction before atomicAdd to global
+
+hints_l1: |
+  ### 1. One Thread per Simulation
+  Launch M threads. Each thread runs one complete TS simulation (T steps):
+  ```cuda
+  __global__ void ts_kernel(int N, int T, int M, float* mu, uint64_t seed,
+                            float* regret_out, float* counts_out) {
+      int m = blockIdx.x * blockDim.x + threadIdx.x;
+      if (m >= M) return;
+      // Init RNG with (seed, m) as unique stream
+      // Run T steps of Thompson Sampling
+      // Write regret_out[m] and atomicAdd to counts_out[i]
+  }
+  ```
+
+  ### 2. Efficient Beta Sampling
+  Beta(α,β) = Gamma(α) / (Gamma(α) + Gamma(β)).
+  For integer α ≥ 1, Gamma(1) = -log(U), Gamma(α) via Marsaglia-Tsang.
+  Early in the simulation α,β are small (1-10), so Gamma is cheap.
+  Late in the simulation α,β can be ~T/N, use Marsaglia-Tsang (O(1) per sample).
+
+  ### 3. RNG State Management
+  Use cuRAND's philox (counter-based, minimal state) or implement xoshiro128**
+  (16 bytes state per thread). Initialize: `curand_init(seed, m, 0, &state)`.
+
+  ### 4. Register Pressure
+  N arms × 2 ints (S_i, F_i) per thread. For N=100: 800 bytes → will spill to local memory.
+  Mitigations:
+  - Use `uint16_t` if T < 65536 (saves 50% registers)
+  - Or accept spilling — local memory is cached in L1, still fast
+
+  ### 5. Counts Aggregation
+  Instead of M threads doing atomicAdd to counts_out[N]:
+  - Each thread writes to thread-local array
+  - Block-level reduction in shared memory
+  - One atomicAdd per arm per block
+  This reduces atomic contention from M to M/blockDim.
+
+  ### 6. Warp-Cooperative Alternative (Advanced)
+  For large N, one warp (32 threads) handles one simulation:
+  - Each lane samples ceil(N/32) arms
+  - Warp shuffle to find argmax
+  - Lane 0 does reward sampling and state update
+  Trades parallelism (fewer simulations in flight) for less register pressure per thread.

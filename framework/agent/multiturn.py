@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -179,7 +181,7 @@ def run_multiturn(
 
     if run_name is None:
         # Distinguish from normal runs
-        date_tag = datetime.now().strftime("%Y%m%d")
+        date_tag = datetime.now().strftime("%Y%m%d_%H%M")
         run_name = f"{model_id}_l{level}_agent_mt_{date_tag}"
 
     registry = LLMRegistry()
@@ -193,15 +195,26 @@ def run_multiturn(
     os.makedirs(out_dir, exist_ok=True)
     progress_path = os.path.join(out_dir, "agent_progress.jsonl")
 
+    # Concurrency controls: GPU eval is single-device, must be serialized;
+    # LLM API calls are I/O-bound and can overlap across repeats.
+    gpu_lock = threading.Lock()
+    progress_lock = threading.Lock()
+
+    def _safe_append_jsonl(obj: dict) -> None:
+        with progress_lock:
+            _append_jsonl(progress_path, obj)
+
     print(f"[agent] run={run_name} model={model_id} task={task_id} level={level} turns={turns} repeats={repeats} split={split}")
     print(f"[agent] artifacts_dir={out_dir}")
 
-    for rep in range(repeats):
+    def _run_single_repeat(rep: int) -> list[TurnRecord]:
+        """Run all turns for one repeat. Turns are sequential; repeats run concurrently."""
+        rep_records: list[TurnRecord] = []
         prev_code: Optional[str] = None
         prev_eval: Optional[EvalResult] = None
 
         for t in range(turns):
-            _append_jsonl(progress_path, {
+            _safe_append_jsonl({
                 "ts": _now_ts(),
                 "event": "turn_start",
                 "run_name": run_name,
@@ -220,13 +233,13 @@ def run_multiturn(
                 feedback = _format_eval_summary(prev_eval)
                 prompt = build_feedback_prompt(base_prompt, prev_code, feedback)
 
-            # Generate
+            # Generate (LLM call — I/O bound, runs concurrently across repeats)
             try:
                 resp = client.generate(prompt, max_tokens=client.model.get("max_tokens"), temperature=temperature)
                 code = extract_cuda_code(resp.content)
             except Exception as e:
                 msg = f"{type(e).__name__}: {str(e)[:500]}"
-                _append_jsonl(progress_path, {
+                _safe_append_jsonl({
                     "ts": _now_ts(),
                     "event": "generation_error",
                     "rep": rep,
@@ -234,7 +247,6 @@ def run_multiturn(
                     "error": msg,
                 })
                 print(f"[agent] rep {rep+1} turn {t+1}: generation FAILED: {msg}")
-                # Record a stub TurnRecord to keep alignment
                 sample_id = rep * 1000 + t
                 rec = TurnRecord(
                     turn=t,
@@ -254,7 +266,7 @@ def run_multiturn(
                         "error": f"generation_error: {msg}",
                     },
                 )
-                records.append(rec)
+                rep_records.append(rec)
                 prev_code = None
                 prev_eval = None
                 continue
@@ -262,7 +274,7 @@ def run_multiturn(
             print(f"[agent] rep {rep+1}/{repeats} turn {t+1}/{turns}: evaluating...")
 
             # Save artifacts
-            sample_id = rep * 1000 + t  # stable, unique-ish within this run
+            sample_id = rep * 1000 + t
             src_path = os.path.join(out_dir, f"agent_r{rep}_t{t}.cu")
             raw_path = os.path.join(out_dir, f"agent_r{rep}_t{t}_raw.txt")
             prompt_path = os.path.join(out_dir, f"agent_r{rep}_t{t}_prompt.txt")
@@ -274,30 +286,30 @@ def run_multiturn(
             with open(prompt_path, "w", encoding="utf-8") as f:
                 f.write(prompt)
 
-            # Eval
-            try:
-                er = eval_single_sample(
-                    task_id=task_id,
-                    sample_path=src_path,
-                    sample_id=sample_id,
-                    device_id=device_id,
-                    arch=arch,
-                    run_nsys=run_nsys,
-                    save_nsys_csv=save_nsys_csv,
-                )
-            except Exception as e:
-                msg = f"{type(e).__name__}: {str(e)[:500]}"
-                _append_jsonl(progress_path, {
-                    "ts": _now_ts(),
-                    "event": "eval_error",
-                    "rep": rep,
-                    "turn": t,
-                    "error": msg,
-                    "trace": traceback.format_exc(limit=5),
-                })
-                print(f"[agent] rep {rep+1} turn {t+1}: eval FAILED: {msg}")
-                # create minimal EvalResult-like dict
-                er = EvalResult(task_id=task_id, sample_id=sample_id, error=f"eval_error: {msg}")
+            # Eval (GPU-bound — serialized via gpu_lock)
+            with gpu_lock:
+                try:
+                    er = eval_single_sample(
+                        task_id=task_id,
+                        sample_path=src_path,
+                        sample_id=sample_id,
+                        device_id=device_id,
+                        arch=arch,
+                        run_nsys=run_nsys,
+                        save_nsys_csv=save_nsys_csv,
+                    )
+                except Exception as e:
+                    msg = f"{type(e).__name__}: {str(e)[:500]}"
+                    _safe_append_jsonl({
+                        "ts": _now_ts(),
+                        "event": "eval_error",
+                        "rep": rep,
+                        "turn": t,
+                        "error": msg,
+                        "trace": traceback.format_exc(limit=5),
+                    })
+                    print(f"[agent] rep {rep+1} turn {t+1}: eval FAILED: {msg}")
+                    er = EvalResult(task_id=task_id, sample_id=sample_id, error=f"eval_error: {msg}")
 
             rec = TurnRecord(
                 turn=t,
@@ -307,12 +319,11 @@ def run_multiturn(
                 prompt_path=prompt_path,
                 eval_result=er.to_dict(),
             )
-            records.append(rec)
+            rep_records.append(rec)
 
             prev_code = code
             prev_eval = er
 
-            # Compute total_ms = init + solve (the metric that matters most)
             _bench = er.benchmark or {}
             _init_ms = _bench.get("init_ms") if er.benchmark else None
             _e2e = _bench.get("e2e_time_ms", {}) if er.benchmark else {}
@@ -321,7 +332,7 @@ def run_multiturn(
             if _init_ms is not None and _solve_ms is not None:
                 _total_ms = float(_init_ms) + float(_solve_ms)
 
-            _append_jsonl(progress_path, {
+            _safe_append_jsonl({
                 "ts": _now_ts(),
                 "event": "turn_done",
                 "rep": rep,
@@ -338,6 +349,29 @@ def run_multiturn(
             })
             _total_str = f"{_total_ms:.3f}" if _total_ms is not None else "N/A"
             print(f"[agent] rep {rep+1}/{repeats} turn {t+1}/{turns}: done (compiled={er.compiled} correct={er.correct} total_ms={_total_str} kernel_time_ms={_bench.get('kernel_time_ms') if er.benchmark else None})")
+
+        return rep_records
+
+    # Run repeats concurrently (capped to avoid API flooding)
+    max_concurrent_repeats = min(repeats, 4)
+    if repeats == 1:
+        # Single repeat: no threading overhead
+        records = _run_single_repeat(0)
+    else:
+        print(f"[agent] running {repeats} repeats concurrently (max {max_concurrent_repeats} threads)")
+        rep_results: dict[int, list[TurnRecord]] = {}
+        with ThreadPoolExecutor(max_workers=max_concurrent_repeats) as pool:
+            future_to_rep = {pool.submit(_run_single_repeat, r): r for r in range(repeats)}
+            for future in as_completed(future_to_rep):
+                rep = future_to_rep[future]
+                try:
+                    rep_results[rep] = future.result()
+                except Exception as e:
+                    print(f"[agent] rep {rep+1} CRASHED: {e}")
+                    rep_results[rep] = []
+        # Merge records in rep order
+        for r in range(repeats):
+            records.extend(rep_results.get(r, []))
 
     summary = MultiTurnRunSummary(
         run_name=run_name,

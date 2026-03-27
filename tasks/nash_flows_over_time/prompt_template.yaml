@@ -1,0 +1,59 @@
+task_description: |
+  You are tasked with implementing a discrete-time dynamic traffic assignment simulation on a GPU.
+  The network is a directed graph where node 0 is the source and node `num_nodes - 1` is the destination.
+  Flow enters the source at a constant `inflow_rate` per time step.
+  
+  At each time step `t` (from 0 to `num_steps - 1`), the simulation proceeds in 5 phases:
+  
+  1. **Pipeline Arrivals**: For each edge `e`, flow that has completed its transit time arrives at the destination node `v`.
+  2. **External Inflow**: `inflow_rate` is added to the flow waiting at node 0.
+  3. **Routing**: A shortest path tree to the destination is computed using Bellman-Ford.
+     The weight of an edge is calculated as:
+     `w = edge_transit_time[e] * 1000 + (int)((queue_volume[e] / edge_capacity[e]) * 1000.0f)`
+     Distances are integers. Ties are broken by choosing the edge with the smaller index `e`.
+     After computing the shortest paths, any flow waiting at node `u` (except the destination) is moved into the queue of the chosen outgoing edge `next_edge[u]`.
+  4. **Queue Processing**: For each edge `e`, up to `edge_capacity[e]` flow leaves the queue and enters the transit pipeline. It will arrive at the destination node at step `t + edge_transit_time[e]`.
+  5. **Destination Accumulation**: Any flow that has reached `num_nodes - 1` is added to `total_arrived` and removed from the node.
+  
+  The maximum transit time for any edge is 31, so you can use a circular buffer of size 32 for the transit pipeline of each edge.
+
+interface: |
+  extern "C" void solution_init(
+      int num_nodes,
+      int num_edges,
+      int num_steps,
+      const int* edge_u,
+      const int* edge_v,
+      const float* edge_capacity,
+      const int* edge_transit_time
+  );
+
+  extern "C" void solution_compute(float inflow_rate, float* out_total_arrived);
+
+input_size_notes: |
+  - `num_nodes` is up to 5,000.
+  - `num_edges` is up to 20,000.
+  - `num_steps` is up to 10,000.
+  - `edge_transit_time` is between 1 and 31.
+
+output_contract: |
+  - `solution_init` should allocate any necessary GPU memory and copy the graph structure.
+  - `solution_compute` must perform the simulation and write the final `total_arrived` to `out_total_arrived`.
+  - `solution_compute` must be idempotent and reset all simulation state (queues, pipelines, node flows) to zero at the beginning of each call.
+  - The Bellman-Ford routing must exactly match the integer arithmetic and tie-breaking logic of the reference implementation to ensure deterministic results.
+
+algorithm_background: |
+  The simulation models the Vickrey bottleneck model (fluid queueing) in discrete time.
+  Flow traverses links in a fixed transit time, but if the inflow exceeds capacity, a point queue forms at the entrance of the link.
+  Users dynamically route themselves along the instantaneous shortest path to the destination, considering both transit time and current queue delays.
+
+hints_l2: |
+  - Use a 1D array of size `num_edges * 32` for the transit pipelines. Index it as `e * 32 + (t % 32)`.
+  - For Bellman-Ford on the GPU, you can use a boolean flag in device memory to track if any distance changed, allowing early termination.
+  - To handle the tie-breaking deterministically in parallel, you can pack the distance and edge index into a single 64-bit integer (`(uint64_t)dist << 32 | (uint32_t)edge_index`) and use `atomicMin` on `unsigned long long`. This perfectly matches the CPU's sequential tie-breaking logic.
+
+hints_l1: |
+  - In `solution_init`, allocate device arrays for the graph structure, node flows, edge queues, pipelines, distances, and next edges.
+  - In `solution_compute`, launch a kernel to clear the state arrays (node flows, queues, pipelines).
+  - Implement the 5 phases as separate CUDA kernels launched sequentially in a loop for `num_steps`.
+  - For Bellman-Ford, initialize distances to 1,000,000,000 and the destination to 0. Launch a kernel over edges that reads `dist[v]`, computes `new_dist`, and uses `atomicMin` on a 64-bit packed value at `dist_packed[u]` to update both distance and `next_edge`.

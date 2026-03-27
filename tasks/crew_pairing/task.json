@@ -4,6 +4,7 @@
   "category": "optimization",
   "difficulty": 3,
   "tags": ["optimization", "scheduling", "crew_pairing", "set_partitioning"],
+  "interface_mode": "compute_only",
 
   "input_sizes": {
     "small":  {"instance": "DataA_chunk3_id1", "N": 37, "seed": 42},

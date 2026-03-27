@@ -1,0 +1,45 @@
+task_description: |
+  The task evaluates the objective function and constraint violations for a batch of candidate solutions to a Bilevel Linear Programming (BLP) formulation of the Motzkin-Straus quadratic program for the maximum clique problem.
+  Given an adjacency matrix A of a graph (size N x N), a penalty parameter mu, and a batch of M candidate solutions (x, q, s) where x and q are vectors of size N and s is a scalar.
+  For each candidate in the batch, compute the leader's objective value:
+    obj = s - mu * sum(min(x_i, q_i))
+  Also compute the maximum constraint violation among the following constraints:
+    1) s - (Ax)_i - q_i = 0 for all i
+    2) sum(x_i) - 1 = 0
+    3) 0 <= q_i <= 1
+    4) x_i >= 0
+    5) s >= 0
+  The maximum constraint violation is the maximum absolute violation across all these constraints.
+  For inequalities like a <= b <= c, the violation is max(0, a - b, b - c).
+  For equalities like a = b, the violation is |a - b|.
+
+interface: |
+  void solution_compute(int N, int M, float mu, const float* A, const float* x, const float* q, const float* s, float* obj, float* max_viol);
+  void solution_free(void);
+
+input_size_notes: |
+  - N (graph size) ranges from 100 to 5000.
+  - M (batch size) ranges from 1000 to 10000.
+  - A is a flattened N x N symmetric adjacency matrix (0s and 1s).
+  - x and q are flattened M x N matrices.
+  - s is an array of size M.
+
+output_contract: |
+  - obj is an array of size M to store the computed objective values.
+  - max_viol is an array of size M to store the maximum constraint violation for each candidate.
+
+algorithm_background: |
+  The Motzkin-Straus formulation relates the maximum clique problem to a continuous optimization problem. This task evaluates a bilevel linear programming reformulation of it. The evaluation requires computing dense matrix-vector multiplications (Ax) and various reductions (sum, min, max) to check constraints and objective values for multiple candidate solutions independently.
+
+hints_l2: |
+  - Each candidate solution can be evaluated independently, making this embarrassingly parallel across the batch dimension M.
+  - The matrix-vector multiplication (Ax) is the most computationally intensive part (O(N^2) per candidate).
+  - Consider using shared memory to load parts of the adjacency matrix A if multiple threads cooperate on a single candidate, or use a batched GEMV approach.
+  - Reductions for sum and max can be done in parallel within a block.
+
+hints_l1: |
+  - Allocate device memory at the start of `solution_compute` and copy A, x, q, and s to the GPU.
+  - In `solution_compute`, launch a kernel where each block handles one or more candidate solutions.
+  - For each candidate, you need to compute `Ax`. Since A is N x N and x is N x 1, this is a standard matrix-vector multiplication.
+  - Keep track of the maximum violation using thread-local variables and then perform a block-level reduction.
+  - Don't forget to copy the results (`obj` and `max_viol`) back to the host at the end of `solution_compute`.

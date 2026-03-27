@@ -4,6 +4,7 @@
   "category": "computational_geometry",
   "difficulty": 3,
   "tags": ["broad_phase", "narrow_phase", "SAT", "uniform_grid", "AABB", "spatial_hashing"],
+  "interface_mode": "compute_only",
 
   "input_sizes": {
     "small":  {"N": 1000,  "seed": 42},

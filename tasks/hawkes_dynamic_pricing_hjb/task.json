@@ -1,0 +1,37 @@
+{
+  "task_id": "hawkes_dynamic_pricing_hjb",
+  "name": "Dynamic Pricing under Hawkes Process (HJB PDE Solver)",
+  "category": "Dynamic Programming",
+  "difficulty": 2,
+  "tags": [
+    "dynamic_programming",
+    "pde",
+    "finite_difference",
+    "pricing",
+    "batched"
+  ],
+  "interface_mode": "compute_only",
+  "input_sizes": {
+    "small": {"batch_size": 2, "J": 1000, "N": 500, "num_actions": 50},
+    "medium": {"batch_size": 8, "J": 2500, "N": 1000, "num_actions": 100},
+    "large": {"batch_size": 32, "J": 5000, "N": 1000, "num_actions": 100}
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0.001,
+    "rtol": 0.01
+  },
+  "timing": {
+    "warmup": 2,
+    "trials": 5,
+    "timeout": 300
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "Mapping the state space J and batch dimension to 1D or 2D CUDA grids.",
+    "Using double buffering for the value function U to save memory bandwidth.",
+    "Using CUDA Graphs to minimize the overhead of the thousands of sequential kernel launches.",
+    "Ensuring coalesced memory accesses when reading interpolated values from the previous time step."
+  ]
+}

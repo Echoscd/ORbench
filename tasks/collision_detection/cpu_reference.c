@@ -35,28 +35,6 @@ static int* g_pair_i;
 static int* g_pair_j;
 static int  g_num_pairs;
 
-void solution_init(int N, int total_verts,
-                   int world_size_x100, int cell_size_x100,
-                   const int* poly_offsets,
-                   const float* vertices_x, const float* vertices_y,
-                   const float* aabb) {
-    g_N = N;
-    g_total_verts = total_verts;
-    g_world_size = (float)world_size_x100 / 100.0f;
-    g_cell_size = (float)cell_size_x100 / 100.0f;
-    g_grid_dim = (int)ceilf(g_world_size / g_cell_size) + 1;
-    g_poly_offsets = poly_offsets;
-    g_vx = vertices_x;
-    g_vy = vertices_y;
-    g_aabb = aabb;
-
-    g_cell_heads = (int*)malloc(MAX_GRID_CELLS * sizeof(int));
-    g_entry_poly = (int*)malloc(MAX_ENTRIES * sizeof(int));
-    g_entry_next = (int*)malloc(MAX_ENTRIES * sizeof(int));
-    g_pair_i = (int*)malloc(MAX_PAIRS * sizeof(int));
-    g_pair_j = (int*)malloc(MAX_PAIRS * sizeof(int));
-}
-
 // ===== Grid hash =====
 static int grid_hash(int gx, int gy) {
     unsigned int h = (unsigned int)(gx * 73856093) ^ (unsigned int)(gy * 19349663);
@@ -133,7 +111,28 @@ static int cmp_ll(const void* a, const void* b) {
     return (va > vb) - (va < vb);
 }
 
-void solution_compute(int N, int* counts) {
+void solution_compute(int N, int total_verts,
+                      int world_size_x100, int cell_size_x100,
+                      const int* poly_offsets,
+                      const float* vertices_x, const float* vertices_y,
+                      const float* aabb,
+                      int* counts) {
+    g_N = N;
+    g_total_verts = total_verts;
+    g_world_size = (float)world_size_x100 / 100.0f;
+    g_cell_size = (float)cell_size_x100 / 100.0f;
+    g_grid_dim = (int)ceilf(g_world_size / g_cell_size) + 1;
+    g_poly_offsets = poly_offsets;
+    g_vx = vertices_x;
+    g_vy = vertices_y;
+    g_aabb = aabb;
+
+    g_cell_heads = (int*)malloc(MAX_GRID_CELLS * sizeof(int));
+    g_entry_poly = (int*)malloc(MAX_ENTRIES * sizeof(int));
+    g_entry_next = (int*)malloc(MAX_ENTRIES * sizeof(int));
+    g_pair_i = (int*)malloc(MAX_PAIRS * sizeof(int));
+    g_pair_j = (int*)malloc(MAX_PAIRS * sizeof(int));
+
     memset(counts, 0, (size_t)N * sizeof(int));
 
     // === Phase 1: Build grid ===
@@ -217,4 +216,18 @@ void solution_compute(int N, int* counts) {
     }
 
     free(packed);
+    free(g_cell_heads);
+    free(g_entry_poly);
+    free(g_entry_next);
+    free(g_pair_i);
+    free(g_pair_j);
+    g_cell_heads = NULL;
+    g_entry_poly = NULL;
+    g_entry_next = NULL;
+    g_pair_i = NULL;
+    g_pair_j = NULL;
+}
+
+void solution_free(void) {
+    // All cleanup is done at the end of solution_compute
 }

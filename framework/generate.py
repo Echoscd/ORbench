@@ -109,7 +109,7 @@ def generate_solutions(
     prompt = load_prompt(task_id, level, split_kernels=split_kernels)
 
     if run_name is None:
-        date_tag = datetime.now().strftime("%Y%m%d")
+        date_tag = datetime.now().strftime("%Y%m%d_%H%M")
         run_name = f"{model.replace('/', '_')}_l{level}_{date_tag}"
 
     run_dir = os.path.join(ORBENCH_ROOT, "runs", run_name, task_id)

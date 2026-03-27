@@ -25,14 +25,22 @@ from .task import load_task, get_task_dir, TaskConfig
 #  Generic constraint text (same for every task)
 # ═══════════════════════════════════════════════════════════════
 
-GENERIC_CONSTRAINTS = """\
+GENERIC_CONSTRAINTS_INIT_COMPUTE = """\
 - Both functions use `extern "C"` linkage
 - All parameters to `solution_compute` are **host pointers**; you manage H2D/D2H yourself
-- Do NOT call `cudaMalloc` inside `solution_compute` (it is called repeatedly)
+- Do NOT call `cudaMalloc` inside `solution_compute` (it is called repeatedly); allocate in `solution_init`
 - Do NOT use any file I/O (`fopen`, `printf`, `fprintf`, etc.)
 - Unreachable / invalid results use `1e30f`"""
 
-RESPONSE_FORMAT = """\
+GENERIC_CONSTRAINTS_COMPUTE_ONLY = """\
+- All functions use `extern "C"` linkage
+- All parameters to `solution_compute` are **host pointers**; you manage H2D/D2H yourself
+- There is NO `solution_init`; do ALL work inside `solution_compute` (including `cudaMalloc`, H2D, kernels, D2H)
+- You must also implement `void solution_free(void)` to release any persistent resources
+- Do NOT use any file I/O (`fopen`, `printf`, `fprintf`, etc.)
+- Unreachable / invalid results use `1e30f`"""
+
+RESPONSE_FORMAT_INIT_COMPUTE = """\
 Return your complete CUDA implementation in a **single** fenced code block:
 
 ```c
@@ -41,6 +49,16 @@ Return your complete CUDA implementation in a **single** fenced code block:
 
 Do NOT include any explanation outside the code block. The code block must contain the full,
 compilable `.cu` source with both `solution_init` and `solution_compute`."""
+
+RESPONSE_FORMAT_COMPUTE_ONLY = """\
+Return your complete CUDA implementation in a **single** fenced code block:
+
+```c
+// your code here
+```
+
+Do NOT include any explanation outside the code block. The code block must contain the full,
+compilable `.cu` source with `solution_compute` and `solution_free`. Do NOT write `solution_init`."""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -152,10 +170,18 @@ def generate_prompt(task_id: str, level: int, split_kernels: bool = False) -> st
 
     # 3. Interface (function signatures — task-specific)
     interface_code = tmpl.get("interface", "").strip()
-    interface_section = f"\n\n## Interface\n\nImplement these two `extern \"C\"` functions in a single `.cu` file. **Do NOT** write `main()`, do NOT read/write any files.\n\n{interface_code}\n"
+    if task.interface_mode == "compute_only":
+        interface_intro = "Implement `solution_compute` and `solution_free` as `extern \"C\"` functions in a single `.cu` file. There is NO `solution_init`. **Do NOT** write `main()`, do NOT read/write any files."
+    else:
+        interface_intro = "Implement these two `extern \"C\"` functions in a single `.cu` file. **Do NOT** write `main()`, do NOT read/write any files."
+    interface_section = f"\n\n## Interface\n\n{interface_intro}\n\n{interface_code}\n"
 
-    # 4. Constraints (generic)
-    constraints_section = f"\n### Constraints\n\n{GENERIC_CONSTRAINTS}\n"
+    # 4. Constraints (generic, mode-dependent)
+    if task.interface_mode == "compute_only":
+        constraints_text = GENERIC_CONSTRAINTS_COMPUTE_ONLY
+    else:
+        constraints_text = GENERIC_CONSTRAINTS_INIT_COMPUTE
+    constraints_section = f"\n### Constraints\n\n{constraints_text}\n"
 
     # 4b. Optional split-kernel guidance (profiling-friendly)
     split_section = ""
@@ -201,8 +227,12 @@ def generate_prompt(task_id: str, level: int, split_kernels: bool = False) -> st
             hints_section = f"\n\n## Optimization Hints\n\n{hints}\n"
     # L3: no hints
 
-    # 10. Response format (generic)
-    response_format_section = f"\n\n## Response Format\n\n{RESPONSE_FORMAT}\n"
+    # 10. Response format (mode-dependent)
+    if task.interface_mode == "compute_only":
+        response_fmt = RESPONSE_FORMAT_COMPUTE_ONLY
+    else:
+        response_fmt = RESPONSE_FORMAT_INIT_COMPUTE
+    response_format_section = f"\n\n## Response Format\n\n{response_fmt}\n"
 
     # ── Assemble ─────────────────────────────────────────────
 

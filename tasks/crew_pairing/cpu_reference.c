@@ -128,12 +128,12 @@ static int g_num_candidates;
 // ===== Working buffers =====
 static int* g_path_buf;  // for path reconstruction
 
-void solution_init(int N, int num_stations, int base_station,
-                   const int* dep_minutes, const int* arr_minutes,
-                   const int* dep_stations, const int* arr_stations,
-                   float duty_cost_per_hour, float pairing_cost_per_hour,
-                   int max_duty_min, int max_block_min,
-                   int max_legs_duty, int min_rest_min) {
+static void do_init(int N, int num_stations, int base_station,
+                    const int* dep_minutes, const int* arr_minutes,
+                    const int* dep_stations, const int* arr_stations,
+                    float duty_cost_per_hour, float pairing_cost_per_hour,
+                    int max_duty_min, int max_block_min,
+                    int max_legs_duty, int min_rest_min) {
     g_N = N;
     g_num_stations = num_stations;
     g_base_station = base_station;
@@ -533,7 +533,18 @@ static float compute_cost(int N, const int* assignments) {
 }
 
 // ===== Phase 2: Greedy set cover =====
-void solution_compute(int N, int* assignments) {
+void solution_compute(int N, int num_stations, int base_station,
+                      const int* dep_minutes, const int* arr_minutes,
+                      const int* dep_stations, const int* arr_stations,
+                      float duty_cost_per_hour, float pairing_cost_per_hour,
+                      int max_duty_min, int max_block_min,
+                      int max_legs_duty, int min_rest_min,
+                      int* assignments) {
+    do_init(N, num_stations, base_station,
+            dep_minutes, arr_minutes, dep_stations, arr_stations,
+            duty_cost_per_hour, pairing_cost_per_hour,
+            max_duty_min, max_block_min, max_legs_duty, min_rest_min);
+
     // Precompute cost of each leg as a single-leg pairing
     if (!g_single_leg_cost) {
         g_single_leg_cost = (float*)malloc((size_t)N * sizeof(float));
@@ -609,4 +620,22 @@ void solution_compute(int N, int* assignments) {
 
     free(assign_spprc);
     free(assign_greedy);
+}
+
+void solution_free(void) {
+    if (g_conn_offsets) { free(g_conn_offsets); g_conn_offsets = NULL; }
+    if (g_conn_targets) { free(g_conn_targets); g_conn_targets = NULL; }
+    if (g_pq) { free(g_pq); g_pq = NULL; }
+    if (g_labels) {
+        for (int i = 0; i < g_N; i++) {
+            free(g_labels[i]);
+            free(g_preds[i]);
+        }
+        free(g_labels); g_labels = NULL;
+        free(g_preds);  g_preds = NULL;
+    }
+    if (g_label_count) { free(g_label_count); g_label_count = NULL; }
+    if (g_candidates) { free(g_candidates); g_candidates = NULL; }
+    if (g_path_buf) { free(g_path_buf); g_path_buf = NULL; }
+    if (g_single_leg_cost) { free(g_single_leg_cost); g_single_leg_cost = NULL; }
 }

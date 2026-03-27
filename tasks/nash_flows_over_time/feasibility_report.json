@@ -1,0 +1,40 @@
+{
+  "suitability_score": 2,
+  "task_id": "nash_flows_over_time",
+  "task_name": "Nash Flows over Time",
+  "category": "Transportation",
+  "problem_summary": "The paper studies a dynamic model of traffic (the fluid queueing or Vickrey bottleneck model) where users control infinitesimal flow particles aiming to travel from an origin to a destination as quickly as possible. The paper provides theoretical proofs for the continuity, uniqueness, and long-term steady-state behavior of Nash flows over time.",
+  "parallelism_analysis": "The problem of computing Nash flows over time is inherently sequential, as it involves integrating over time and computing piecewise linear phases. Furthermore, the paper explicitly states that it is an open question whether the 'thin flow equations' required to compute the next phase can be efficiently solved. While batching independent instances could provide some parallelism, the lack of a clear, efficient algorithm makes it a poor candidate for GPU acceleration.",
+  "scale_analysis": "The problem scale depends on the network size (nodes and edges) and the number of phases required to reach a steady state. However, without a tractable algorithm, computational intensity is difficult to define in a practical implementation context.",
+  "concerns": [
+    "The paper is purely theoretical and focuses on mathematical proofs rather than computational algorithms.",
+    "The paper explicitly states that an efficient (polynomial-time) algorithm to solve the thin flow equations is an open question.",
+    "The time-dependent nature of the phase-by-phase integration makes the problem inherently sequential."
+  ],
+  "gpu_optimization_points": [],
+  "suggested_sizes": {
+    "small": {
+      "nodes": 10,
+      "edges": 30
+    },
+    "medium": {
+      "nodes": 100,
+      "edges": 300
+    },
+    "large": {
+      "nodes": 1000,
+      "edges": 3000
+    }
+  },
+  "interface_mode": "init_compute",
+  "difficulty": 3,
+  "tags": [
+    "theoretical",
+    "dynamic traffic assignment",
+    "game theory"
+  ],
+  "algorithm_description": "The paper does not propose a specific algorithm for computing Nash flows over time. It relies on the theoretical existence of solutions to the 'thin flow equations' to construct equilibria phase by phase.",
+  "input_data_description": "A directed graph representing a road network, with each edge having a capacity and a transit time. A constant inflow rate at the source node is also provided.",
+  "output_data_description": "Piecewise linear functions describing the earliest arrival times and queue lengths over time for each node and edge.",
+  "reference_code_snippet": ""
+}

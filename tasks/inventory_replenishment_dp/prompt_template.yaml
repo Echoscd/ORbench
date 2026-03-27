@@ -1,0 +1,77 @@
+task_description: |
+  A finite-horizon dynamic programming problem for multi-period inventory replenishment with autoregressive demand.
+  The state space is 4-dimensional, tracking current inventory `I`, accumulated backlog `B`, and two statistics of past demand shocks: sum `Phi` and sum of squares `Psi`.
+  At each time step `t` (from `T-1` down to `0`), and for each state in the 4D grid, the algorithm must find the optimal adjustment quantity `x` that minimizes expected holding, backlogging, and adjustment costs by integrating over the distribution of the current demand shock `phi`.
+
+  The state transitions are:
+  - Realized demand: `xi = mu + nu * (phi + alpha * Phi)`
+  - Next inventory: `I' = I + y + x - xi`
+  - Next backlog: `B' = B + max(0, -I')`
+  - Next Phi: `Phi' = Phi + phi`
+  - Next Psi: `Psi' = Psi + phi^2`
+
+  The immediate cost is:
+  `cost = c_t[t] * |x| + h_t[t] * max(0, I') + b_t[t] * max(0, -I')`
+
+  The expected cost for a given action `x` is the sum over all `phi` realizations of:
+  `prob * (cost + V_{t+1}(I', B', Phi', Psi'))`
+  where `V_{t+1}` is the value function at the next time step, evaluated using multi-linear interpolation on the 4D grid.
+  The value `V_t(I, B, Phi, Psi)` is the minimum expected cost over all actions `x`.
+
+  The boundary conditions for interpolation: if a value falls outside the grid, it should be clamped to the nearest grid point (i.e., the boundary).
+
+interface: |
+  void solution_compute(
+      int N_I, int N_B, int N_Phi, int N_Psi, int N_x, int N_phi, int T,
+      const float* c_t, const float* h_t, const float* b_t,
+      float mu, float nu, float alpha, float y,
+      const float* grid_I, const float* grid_B, const float* grid_Phi, const float* grid_Psi,
+      const float* actions, const float* shocks, const float* shock_probs,
+      float* V_out
+  );
+
+input_size_notes: |
+  - `N_I`, `N_B`, `N_Phi`, `N_Psi` are the dimensions of the 4D state grid (up to ~32 each).
+  - `N_x` is the number of discrete actions (up to ~32).
+  - `N_phi` is the number of discrete demand shocks (up to ~32).
+  - `T` is the time horizon (up to ~15).
+  - The total number of states per time step is `N_I * N_B * N_Phi * N_Psi`, which can be over 1 million.
+  - The total number of iterations per time step is `Total States * N_x * N_phi`, which can be over 1 billion.
+
+output_contract: |
+  - The output array `V_out` should contain the computed value function `V_0` for all states at the initial time step `t=0`.
+  - The array should be flattened in row-major order: `(((iI * N_B + iB) * N_Phi + iPhi) * N_Psi + iPsi)`.
+  - The values should be numerically accurate (within 0.01 relative/absolute tolerance).
+
+algorithm_background: |
+  The algorithm performs backward induction. Initialize `V_T` to all zeros.
+  For each time step `t` from `T-1` down to `0`:
+    For each state `(I, B, Phi, Psi)`:
+      `min_cost = INF`
+      For each action `x`:
+        `expected_cost = 0`
+        For each shock `phi` with probability `prob`:
+          Compute next state `(I', B', Phi', Psi')`
+          Compute immediate `cost`
+          Interpolate `V_{t+1}` at `(I', B', Phi', Psi')` to get `future_cost`
+          `expected_cost += prob * (cost + future_cost)`
+        `min_cost = min(min_cost, expected_cost)`
+      `V_t(I, B, Phi, Psi) = min_cost`
+
+  Multi-linear interpolation in 4D requires finding the bounding hyper-box for the target point and computing a weighted average of the 16 corner values.
+
+hints_l2: |
+  - This problem is perfectly suited for GPU acceleration. Each state in the 4D grid can be evaluated independently by a single CUDA thread.
+  - The outer loop over time steps `t` must be sequential, but the inner loops over the state space can be fully parallelized.
+  - You will need two buffers for the value function: `V_curr` and `V_next`. Swap them after each time step.
+  - The 4D interpolation requires 16 memory reads from `V_next`. Optimizing these reads is critical for performance.
+  - Consider using CUDA textures or `__ldg()` for reading `V_next` to benefit from the read-only cache.
+  - The action `x` and shock `phi` loops should be kept thread-local.
+
+hints_l1: |
+  - Allocate `V_curr` and `V_next` on the device using `cudaMalloc`.
+  - Copy the grid arrays (`grid_I`, `grid_B`, `grid_Phi`, `grid_Psi`), `actions`, `shocks`, and `shock_probs` to the device.
+  - Launch a kernel with a 1D or 3D grid that covers all `N_I * N_B * N_Phi * N_Psi` states.
+  - Inside the kernel, compute the 4D indices `(iI, iB, iPhi, iPsi)` from the thread index.
+  - Implement a device function for the 4D interpolation. It should first find the 1D indices and weights for each dimension (using binary search or linear search, clamping to boundaries), and then compute the weighted sum of the 16 corners.
+  - After the time step loop, copy `V_curr` back to the host array `V_out`.

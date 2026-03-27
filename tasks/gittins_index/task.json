@@ -1,0 +1,39 @@
+{
+  "task_id": "gittins_index",
+  "interface_mode": "compute_only",
+  "name": "Gittins Index for Bernoulli Multi-Armed Bandit",
+  "category": "dynamic_programming",
+  "difficulty": 4,
+  "tags": ["backward_induction", "binary_search", "bandit", "gittins_index",
+           "triangular_grid", "layer_parallel"],
+
+  "input_sizes": {
+    "small":  {"N": 50,  "a_x10000": 9000, "S": 1275,  "num_bisect": 40, "seed": 42},
+    "medium": {"N": 150, "a_x10000": 9500, "S": 11325, "num_bisect": 40, "seed": 42},
+    "large":  {"N": 300, "a_x10000": 9900, "S": 45150, "num_bisect": 40, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 1e-4,
+    "rtol": 1e-4
+  },
+
+  "timing": {
+    "warmup": 1,
+    "trials": 3,
+    "timeout": 600
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "layer_parallel_bisection",
+    "shared_memory_nu_table",
+    "persistent_kernel_layer_sync",
+    "warp_level_backward_induction",
+    "local_memory_V_array",
+    "coalesced_nu_table_access"
+  ]
+}

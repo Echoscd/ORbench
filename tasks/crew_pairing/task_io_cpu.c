@@ -13,15 +13,16 @@
 #include <string.h>
 #include <math.h>
 
-// ===== LLM / CPU-baseline interface (two functions) =====
-extern void solution_init(int N, int num_stations, int base_station,
-                          const int* dep_minutes, const int* arr_minutes,
-                          const int* dep_stations, const int* arr_stations,
-                          float duty_cost_per_hour, float pairing_cost_per_hour,
-                          int max_duty_min, int max_block_min,
-                          int max_legs_duty, int min_rest_min);
+// ===== LLM / CPU-baseline interface =====
+extern void solution_compute(int N, int num_stations, int base_station,
+                             const int* dep_minutes, const int* arr_minutes,
+                             const int* dep_stations, const int* arr_stations,
+                             float duty_cost_per_hour, float pairing_cost_per_hour,
+                             int max_duty_min, int max_block_min,
+                             int max_legs_duty, int min_rest_min,
+                             int* assignments);
 
-extern void solution_compute(int N, int* assignments);
+extern void solution_free(void);
 
 // ===== task_io internal state =====
 typedef struct {
@@ -68,11 +69,6 @@ void* task_setup(const TaskData* data, const char* data_dir) {
         return NULL;
     }
 
-    solution_init(N, num_stations, base_station,
-                  dep_minutes, arr_minutes, dep_stations, arr_stations,
-                  duty_rate, pairing_rate,
-                  max_duty_min, max_block_min, max_legs_duty, min_rest_min);
-
     TaskIOContext* ctx = (TaskIOContext*)calloc(1, sizeof(TaskIOContext));
     ctx->N = N;
     ctx->num_stations = num_stations;
@@ -95,7 +91,12 @@ void* task_setup(const TaskData* data, const char* data_dir) {
 
 void task_run(void* test_data) {
     TaskIOContext* ctx = (TaskIOContext*)test_data;
-    solution_compute(ctx->N, ctx->assignments);
+    solution_compute(ctx->N, ctx->num_stations, ctx->base_station,
+                     ctx->dep_min, ctx->arr_min, ctx->dep_stn, ctx->arr_stn,
+                     ctx->duty_rate, ctx->pairing_rate,
+                     ctx->max_duty_min, ctx->max_block_min,
+                     ctx->max_legs_duty, ctx->min_rest_min,
+                     ctx->assignments);
 }
 
 // Compare function for qsort: sort leg indices by departure time
@@ -197,6 +198,7 @@ void task_write_output(void* test_data, const char* output_path) {
 void task_cleanup(void* test_data) {
     if (!test_data) return;
     TaskIOContext* ctx = (TaskIOContext*)test_data;
+    solution_free();
     free(ctx->assignments);
     free(ctx);
 }

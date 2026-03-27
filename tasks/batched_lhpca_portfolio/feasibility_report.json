@@ -1,0 +1,51 @@
+{
+  "suitability_score": 8,
+  "task_id": "batched_lhpca_portfolio",
+  "task_name": "Batched Long-History PCA for Portfolio Optimization",
+  "category": "Financial Engineering",
+  "problem_summary": "In portfolio optimization, estimating the covariance matrix of asset returns is critical but challenging due to noise and finite-sample errors. Long-History Principal Component Analysis (LH-PCA) mitigates these issues by extracting latent risk factors over an extended data history. This task involves running a Monte Carlo simulation where, for each independent trial, a return matrix is processed. The algorithm normalizes the returns, computes a time-wise correlation matrix, extracts the top K principal components, and reconstructs the return matrix into factor-driven and idiosyncratic components. Finally, it estimates a regularized covariance matrix and solves a linear system to find the weights of the Global Minimum Variance Portfolio (GMVP).",
+  "parallelism_analysis": "The problem exhibits parallelism at two levels. First, the Monte Carlo simulations are completely independent, allowing for batch-level parallelism across all trials. Second, within each trial, the operations consist of large-scale dense linear algebra: matrix multiplications, column-wise reductions (L2 norms), eigendecompositions, and linear system solves. These operations can be heavily parallelized on the GPU using highly optimized BLAS and LAPACK routines, as well as custom CUDA kernels for the element-wise and reduction steps.",
+  "scale_analysis": "A typical large-scale problem involves 64 simulations, each with 2000 time steps and 2000 assets. The covariance matrix for each simulation is 2000x2000. Storing the data and intermediate matrices requires several gigabytes of memory, which fits well within modern GPU limits. The computational intensity is very high, dominated by the O(T^2 N) and O(N^2 T) matrix multiplications, the O(T^3) eigendecomposition, and the O(N^3) linear system solve per simulation.",
+  "concerns": [
+    "Eigendecomposition of large matrices (e.g., 2000x2000) is not natively supported in batched form by cuSOLVER (which only supports batched syevj up to 32x32). The LLM will need to either write a loop over standard cuSOLVER calls (which is still efficient for large matrices) or implement a custom solver.",
+    "The linear system solve for the portfolio weights also involves large matrices (2000x2000), requiring `cublas<t>getrfBatched` or a loop over `cusolverDn<t>potrf`."
+  ],
+  "gpu_optimization_points": [
+    "Orchestrating cuBLAS and cuSOLVER calls efficiently to minimize host-device synchronization.",
+    "Fusing the normalization, idiosyncratic variance computation, and covariance assembly into custom CUDA kernels to save memory bandwidth.",
+    "Using batched routines where available (e.g., batched GEMM) to maximize GPU utilization across the independent simulations."
+  ],
+  "suggested_sizes": {
+    "small": {
+      "S": 10,
+      "T": 250,
+      "N": 500,
+      "K": 5
+    },
+    "medium": {
+      "S": 32,
+      "T": 1000,
+      "N": 1000,
+      "K": 10
+    },
+    "large": {
+      "S": 64,
+      "T": 2000,
+      "N": 2000,
+      "K": 20
+    }
+  },
+  "interface_mode": "init_compute",
+  "difficulty": 3,
+  "tags": [
+    "finance",
+    "linear-algebra",
+    "pca",
+    "portfolio-optimization",
+    "batched"
+  ],
+  "algorithm_description": "Input:\n- `R`: A 3D float array of shape `(S, T, N)` representing returns for `S` independent simulations, `T` time steps, and `N` assets.\n- `K`: Integer, number of principal components to extract.\n\nOutput:\n- `w`: A 2D float array of shape `(S, N)` representing the minimum variance portfolio weights for each simulation.\n\nFor each simulation s in {0, ..., S-1}:\n1. Let R^{(s)} be the T x N matrix for simulation s.\n2. Normalize each column of R^{(s)} by its Euclidean (L2) norm. If a column has a norm of 0, leave it as 0. Let this normalized matrix be R_norm^{(s)}.\n3. Compute the T x T matrix M^{(s)} = R_norm^{(s)} * (R_norm^{(s)})^T.\n4. Find the K eigenvectors of M^{(s)} corresponding to the K largest eigenvalues. Let these eigenvectors form the columns of Phi^{(s)} (shape T x K). Note: Any orthonormal basis for the subspace spanned by the top K eigenvectors is acceptable, as the subsequent projection is invariant to the choice of basis.\n5. Compute the factor exposures Z^{(s)} = (Phi^{(s)})^T * R^{(s)} (shape K x N).\n6. Compute the factor returns F^{(s)} = Phi^{(s)} * Z^{(s)} (shape T x N).\n7. Compute the idiosyncratic returns E^{(s)} = R^{(s)} - F^{(s)} (shape T x N).\n8. Compute the factor covariance matrix C_F^{(s)} = (1/T) * (F^{(s)})^T * F^{(s)} (shape N x N).\n9. Compute the idiosyncratic variances V_E^{(s)} as a vector of length N, where the i-th element is (1/T) * sum_{t=1}^T (E^{(s)}_{t, i})^2.\n10. Compute the estimated covariance matrix Sigma_hat^{(s)} = C_F^{(s)} + diag(V_E^{(s)}).\n11. Solve the linear system Sigma_hat^{(s)} * x^{(s)} = 1 for x^{(s)} (shape N), where 1 is a vector of ones.\n12. Compute the final weights w^{(s)} = x^{(s)} / sum_{i=1}^N x^{(s)}_i.",
+  "input_data_description": "The input data consists of a 3D array `R` of shape `(S, T, N)` containing randomly generated floating-point numbers (e.g., drawn from a normal distribution to simulate asset returns), and an integer `K` (e.g., 5 to 20).",
+  "output_data_description": "The output is a 2D array `w` of shape `(S, N)` containing the portfolio weights for each simulation.",
+  "reference_code_snippet": "import numpy as np\nfrom scipy.sparse.linalg import eigsh\n\ndef compute_portfolio_weights(R_batch, K):\n    S, T, N = R_batch.shape\n    w_batch = np.zeros((S, N))\n    \n    for s in range(S):\n        R = R_batch[s]\n        \n        # 1. Normalize columns\n        norms = np.linalg.norm(R, axis=0)\n        norms[norms == 0] = 1.0\n        R_norm = R / norms\n        \n        # 2. Compute TxT correlation matrix\n        M = R_norm @ R_norm.T\n        \n        # 3. Top K eigenvectors\n        eigen_val, eigen_vec = eigsh(M, k=K, which='LA')\n        Phi = eigen_vec\n        \n        # 4. Factor exposures and returns\n        Z = Phi.T @ R\n        F = Phi @ Z\n        \n        # 5. Idiosyncratic returns\n        E = R - F\n        \n        # 6. Covariance estimation\n        C_F = (F.T @ F) / T\n        V_E = np.sum(E**2, axis=0) / T\n        Sigma_hat = C_F + np.diag(V_E)\n        \n        # 7. Minimum variance portfolio\n        ones = np.ones(N)\n        x = np.linalg.solve(Sigma_hat, ones)\n        w_batch[s] = x / np.sum(x)\n        \n    return w_batch"
+}

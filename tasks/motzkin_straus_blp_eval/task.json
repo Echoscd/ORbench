@@ -1,0 +1,22 @@
+{
+  "task_id": "motzkin_straus_blp_eval",
+  "name": "Motzkin-Straus BLP Formulation Evaluation",
+  "category": "Optimization",
+  "difficulty": 1,
+  "tags": ["bilevel optimization", "theoretical", "batch evaluation"],
+  "interface_mode": "compute_only",
+  "input_sizes": {
+    "small": {"N": 100, "M": 1000, "seed": 42},
+    "medium": {"N": 1000, "M": 5000, "seed": 42},
+    "large": {"N": 5000, "M": 10000, "seed": 42}
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0.01,
+    "rtol": 0.01
+  },
+  "timing": {"warmup": 3, "trials": 10, "timeout": 180},
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": ["Batched matrix-vector multiplication", "Parallel reductions for constraint checking", "Memory coalescing for candidate data"]
+}

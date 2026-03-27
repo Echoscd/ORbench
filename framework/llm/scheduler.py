@@ -101,7 +101,7 @@ class GenerationScheduler:
     # ── Path helpers ─────────────────────────────────────────
 
     def _run_name(self, job: GenerationJob) -> str:
-        date_tag = datetime.now().strftime("%Y%m%d")
+        date_tag = datetime.now().strftime("%Y%m%d_%H%M")
         return f"{job.model_id}_l{job.level}_{date_tag}"
 
     def _output_path(self, job: GenerationJob) -> str:

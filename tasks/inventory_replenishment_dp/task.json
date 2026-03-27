@@ -1,0 +1,30 @@
+{
+  "task_id": "inventory_replenishment_dp",
+  "name": "Multi-Period Inventory Replenishment Dynamic Programming",
+  "category": "Dynamic Programming",
+  "difficulty": 3,
+  "tags": [
+    "dynamic programming",
+    "inventory control",
+    "multi-dimensional state space",
+    "stochastic optimization"
+  ],
+  "interface_mode": "compute_only",
+  "input_sizes": {
+    "small":  {"N_I": 10, "N_B": 10, "N_Phi": 10, "N_Psi": 10, "N_x": 10, "N_phi": 10, "T": 5, "seed": 42},
+    "medium": {"N_I": 20, "N_B": 20, "N_Phi": 20, "N_Psi": 20, "N_x": 16, "N_phi": 16, "T": 10, "seed": 42},
+    "large":  {"N_I": 32, "N_B": 32, "N_Phi": 32, "N_Psi": 32, "N_x": 32, "N_phi": 32, "T": 15, "seed": 42}
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0.01,
+    "rtol": 0.01
+  },
+  "timing": {"warmup": 1, "trials": 3, "timeout": 180},
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "Using CUDA textures or optimized global memory reads for the 4D multi-linear interpolation of the value function.",
+    "Assigning one thread per state to compute the optimal action, keeping the action and expectation loops thread-local to maximize register usage efficiency."
+  ]
+}

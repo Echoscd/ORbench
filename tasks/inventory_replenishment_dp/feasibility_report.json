@@ -1,0 +1,59 @@
+{
+  "suitability_score": 8,
+  "task_id": "inventory_replenishment_dp",
+  "task_name": "Multi-Period Inventory Replenishment Dynamic Programming",
+  "category": "Dynamic Programming",
+  "problem_summary": "A finite-horizon dynamic programming problem for multi-period inventory replenishment with autoregressive demand. The state space is 4-dimensional, tracking current inventory, accumulated backlog, and two statistics of past demand shocks (sum and sum of squares). At each time step and state, the algorithm must find the optimal adjustment quantity that minimizes expected holding, backlogging, and adjustment costs by integrating over the distribution of the current demand shock.",
+  "parallelism_analysis": "The problem exhibits massive parallelism across the state space. For a given time step, the value function for each of the millions of states in the 4D grid can be computed completely independently. Each state evaluation involves an inner loop over possible actions and another inner loop over demand shock realizations. This maps perfectly to the GPU, where each thread (or block) can be assigned to compute the optimal value for one state.",
+  "scale_analysis": "With a 4D state space (e.g., 50 points per dimension), there are 6.25 million states per time step. For each state, evaluating 20 actions and 20 demand shock realizations requires 400 iterations. This results in ~2.5 billion loop iterations per time step. Over a horizon of T=10, this is a massive computational workload that is heavily CPU-bottlenecked in Python/C++, making it an ideal candidate for GPU acceleration.",
+  "concerns": [
+    "The 4D state space requires careful memory layout and multi-dimensional interpolation to read values from the next time step's value function.",
+    "The boundary conditions for the state variables (especially accumulated backlog and squared shocks) need to be handled correctly to avoid out-of-bounds memory accesses."
+  ],
+  "gpu_optimization_points": [
+    "Using CUDA textures or optimized global memory reads for the 4D multi-linear interpolation of the value function.",
+    "Assigning one thread per state to compute the optimal action, keeping the action and expectation loops thread-local to maximize register usage efficiency.",
+    "Using shared memory to cache frequently accessed slices of the next time step's value function if block dimensions are chosen carefully."
+  ],
+  "suggested_sizes": {
+    "small": {
+      "N_I": 20,
+      "N_B": 20,
+      "N_Phi": 20,
+      "N_Psi": 20,
+      "N_x": 10,
+      "N_phi": 10,
+      "T": 5
+    },
+    "medium": {
+      "N_I": 50,
+      "N_B": 50,
+      "N_Phi": 50,
+      "N_Psi": 50,
+      "N_x": 20,
+      "N_phi": 20,
+      "T": 10
+    },
+    "large": {
+      "N_I": 100,
+      "N_B": 100,
+      "N_Phi": 100,
+      "N_Psi": 100,
+      "N_x": 50,
+      "N_phi": 50,
+      "T": 20
+    }
+  },
+  "interface_mode": "init_compute",
+  "difficulty": 3,
+  "tags": [
+    "dynamic programming",
+    "inventory control",
+    "multi-dimensional state space",
+    "stochastic optimization"
+  ],
+  "algorithm_description": "The algorithm performs backward induction from time T down to 1. Initialize V_{T+1}(S) = 0 for all states S = (I, B, Phi, Psi). For each time step t (from T down to 1), and for each state S in the 4D grid, iterate over all possible discrete actions x. For a given action x, compute the expected cost by iterating over discrete realizations of the demand shock phi. For each phi, calculate the realized demand xi = mu + nu * (phi + alpha * Phi). Calculate the next inventory I' = I + y + x - xi, the next backlog B' = B + max(0, -I'), the next Phi' = Phi + phi, and the next Psi' = Psi + phi^2. Compute the immediate cost: c_t * |x| + h_t * max(0, I') + b_t * max(0, -I'). Add the future cost V_{t+1}(I', B', Phi', Psi') using multi-linear interpolation on the 4D grid (clamping to grid boundaries if necessary). Average these costs over all phi realizations to get the expected cost for action x. The value V_t(S) is the minimum expected cost over all x.",
+  "input_data_description": "Parameters for the grid dimensions (N_I, N_B, N_Phi, N_Psi, N_x, N_phi), time horizon T, cost parameters (c_t, h_t, b_t), demand parameters (mu, nu, alpha), and the fixed precommitted quantity y. Arrays defining the 1D grid coordinates for each of the 4 state dimensions, the action space, and the demand shock distribution.",
+  "output_data_description": "The computed value function V_1 at the initial state (I=0, B=0, Phi=0, Psi=0), or the full 4D grid for V_1.",
+  "reference_code_snippet": "We compare all policies to dynamic programming benchmarks obtained by backward induction over a discretized grid-based state space combined with a grid search over the precommitted replenishment quantity y. The discretized state comprises the inventory level I_t(j_t), the accumulated backlogged demand, the summed constituent uncertainty, and its squared two-norm for each t."
+}

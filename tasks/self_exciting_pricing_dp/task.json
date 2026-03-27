@@ -1,0 +1,48 @@
+{
+  "task_id": "self_exciting_pricing_dp",
+  "name": "Self-Exciting Dynamic Pricing DP",
+  "category": "Dynamic Programming",
+  "difficulty": 2,
+  "tags": [
+    "dynamic programming",
+    "finite difference",
+    "layer-parallel",
+    "pricing"
+  ],
+  "interface_mode": "compute_only",
+  "input_sizes": {
+    "small": {
+      "N_x": 10000,
+      "N_T": 100,
+      "N_lambda": 50
+    },
+    "medium": {
+      "N_x": 50000,
+      "N_T": 500,
+      "N_lambda": 100
+    },
+    "large": {
+      "N_x": 100000,
+      "N_T": 1000,
+      "N_lambda": 200
+    }
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0.001,
+    "rtol": 0.001
+  },
+  "timing": {
+    "warmup": 1,
+    "trials": 3,
+    "timeout": 180
+  },
+  "build_command": "",
+  "extra_build_flags": "-lm",
+  "gpu_optimization_points": [
+    "Double buffering for the value function arrays to avoid unnecessary memory allocations or copies.",
+    "Fusing the lambda search loop into the state update kernel.",
+    "Using CUDA Graphs or Cooperative Groups to avoid kernel launch overhead for the outer sequential time loop.",
+    "Computing the reward function r(lambda) on the fly or storing it in shared/constant memory to save memory bandwidth."
+  ]
+}
