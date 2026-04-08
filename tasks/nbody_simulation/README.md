@@ -2,60 +2,52 @@
 
 ## Problem Background
 
-The N-body problem computes the gravitational force on each particle in a system of N bodies due to all other particles. For each particle i, the gravitational force from particle j is:
+The N-body problem computes the gravitational force on each particle in a system of bodies due to all other bodies. For particle `i`, the force contributed by particle `j` is:
 
-```
+```text
 F_ij = G * m_i * m_j * (r_j - r_i) / (|r_j - r_i|^2 + eps^2)^(3/2)
 ```
 
-where `eps` (softening parameter) prevents singularities when particles are very close. The total force on particle i is the sum over all j != i.
+where `eps` is a softening parameter that avoids singularities when two particles are very close. The total force on particle `i` is the sum over all `j != i`.
 
-This direct-sum approach has O(N^2) complexity and is the fundamental building block for more advanced methods (Barnes-Hut, FMM). It appears in astrophysical simulations (galaxy formation, stellar dynamics), molecular dynamics, and particle-based fluid simulations.
+The direct-summation method has `O(N^2)` complexity and is a classic benchmark in astrophysics, molecular dynamics, and particle simulation.
 
 ## Algorithm Source
 
-- Textbook: Hockney & Eastwood, "Computer Simulation Using Particles" (1988)
-- NVIDIA CUDA Samples: "nbody" — the canonical GPU computing benchmark
-- Industry: GADGET (cosmological N-body), LAMMPS (molecular dynamics)
+- Hockney & Eastwood, *Computer Simulation Using Particles* (1988)
+- Classical direct-sum N-body simulation used in computational physics
+- NVIDIA CUDA samples and many HPC tutorials use N-body as a canonical GPU benchmark
 
 ## Why GPU Acceleration
 
-1. **Embarrassingly parallel outer loop**: Each particle's force computation is independent — one thread per particle.
-2. **Shared memory tiling**: The inner loop (sum over all other particles) can be tiled so that tiles of particle data are loaded into shared memory, reducing global memory bandwidth by a factor of the tile size.
-3. **Compute-bound**: 20+ FLOPs per pair interaction with regular memory access — ideal for GPU throughput.
-4. **SIMD-friendly**: All particles execute the same instruction sequence with no branching.
+1. **Embarrassingly parallel outer loop**: each particle's output force can be computed independently.
+2. **Regular dense interaction pattern**: every particle interacts with every other particle.
+3. **Shared-memory tiling opportunity**: blocks can reuse tiles of particle positions and masses.
+4. **High arithmetic intensity**: each pairwise interaction performs multiple floating-point operations.
 
 ## Input Format
 
-Binary file `input.bin` (ORBench v2 format):
+`input.bin` contains four float32 tensors and two integer parameters:
 
-| Tensor | Type | Size | Description |
-|--------|------|------|-------------|
-| `pos_x` | float32 | N | X coordinates of particles |
-| `pos_y` | float32 | N | Y coordinates of particles |
-| `pos_z` | float32 | N | Z coordinates of particles |
-| `mass` | float32 | N | Mass of each particle |
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `N` | int64 | Number of particles |
-| `softening_x1e6` | int64 | Softening parameter * 1e6 (divide by 1e6 to get float) |
+- `pos_x`, `pos_y`, `pos_z`: particle coordinates, length `N`
+- `mass`: particle masses, length `N`
+- `N`: number of particles
+- `softening_x1e6`: softening parameter multiplied by `1e6`
 
 ## Output Format
 
-File `expected_output.txt`: N lines, each containing three space-separated floats — the force components (fx, fy, fz) on that particle.
+`expected_output.txt` contains **3N lines**. For each particle `i`, write:
 
-```
-Format: "%.6e %.6e %.6e\n" per particle
-Tolerance: rtol=1e-4, atol=1e-6
-```
+- line `3*i + 0`: `fx[i]`
+- line `3*i + 1`: `fy[i]`
+- line `3*i + 2`: `fz[i]`
 
-Gravitational constant G = 1.0 (natural units).
+Each line contains a single float. This flattened format matches the current ORBench validator.
 
 ## Data Sizes
 
-| Size | N (particles) | Pairs computed |
-|------|---------------|----------------|
-| small | 4096 | ~16.7M |
-| medium | 16384 | ~268M |
-| large | 65536 | ~4.3B |
+| Size | N |
+|------|---:|
+| small | 1024 |
+| medium | 4096 |
+| large | 8192 |

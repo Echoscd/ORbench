@@ -1,0 +1,86 @@
+# N-Body Gravitational Simulation -- Prompt Template
+
+task_description: |
+  Compute the 3D gravitational force on every particle using direct summation.
+
+  For particle i, the output is:
+
+    F_i = sum_{j != i} m_i * m_j * (r_j - r_i) / (|r_j - r_i|^2 + eps^2)^(3/2)
+
+  Use G = 1.0. The softening parameter is provided as an integer `softening_x1e6`
+  and should be decoded as `softening = softening_x1e6 / 1e6f`.
+
+  The output is three arrays `fx`, `fy`, `fz`, one value per particle.
+
+interface: |
+  ```c
+  extern "C" void solution_compute(
+      int N,
+      float softening,
+      const float* pos_x,
+      const float* pos_y,
+      const float* pos_z,
+      const float* mass,
+      float* fx,
+      float* fy,
+      float* fz
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - small: 1,024 particles
+  - medium: 4,096 particles
+  - large: 8,192 particles
+  - All tensors are host pointers.
+  - Positions and masses are float32 arrays of length N.
+  - The benchmark is compute_only, so setup and compute are timed together.
+
+output_contract: |
+  - `fx[i]`, `fy[i]`, `fz[i]` must match the CPU reference numerically.
+  - The current ORBench validator reads one float per line, so task_io will flatten
+    the three output arrays into 3N lines.
+  - `solution_compute` must synchronize before returning.
+  - The implementation must be deterministic for the same input.
+
+algorithm_background: |
+  This is the classical direct O(N^2) N-body interaction kernel.
+
+  For each particle i:
+    1. Load its position and mass.
+    2. Loop over all particles j.
+    3. Compute dx, dy, dz.
+    4. Compute inv_dist = rsqrt(dx*dx + dy*dy + dz*dz + eps^2).
+    5. Compute inv_dist^3.
+    6. Accumulate force components.
+
+  This kernel is a canonical GPU benchmark because the outer loop is parallel and
+  the inner loop can be tiled in shared memory.
+
+hints_l2: |
+  - Map one thread to one output particle.
+  - Copy input arrays to device at the start of solution_compute.
+  - Use shared-memory tiling over source particles j.
+  - Accumulate force components in registers.
+  - Copy `fx`, `fy`, `fz` back to host before returning.
+
+hints_l1: |
+  ### 1. Parallelization Strategy
+  Launch one thread per target particle i. Each thread computes one output force triple.
+
+  ### 2. Shared Memory Tile
+  For a tile of source particles j:
+  - load pos_x, pos_y, pos_z, mass into shared memory
+  - synchronize
+  - have all threads in the block iterate over the tile
+
+  ### 3. Arithmetic
+  Use:
+    dist2 = dx*dx + dy*dy + dz*dz + eps2
+    inv_dist = rsqrtf(dist2)
+    inv_dist3 = inv_dist * inv_dist * inv_dist
+    coeff = mass_i * mass_j * inv_dist3
+
+  ### 4. Correctness
+  Skip self-interaction when j == i. Use float arithmetic consistent with the CPU baseline.

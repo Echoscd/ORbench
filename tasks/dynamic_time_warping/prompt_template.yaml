@@ -1,0 +1,74 @@
+# Dynamic Time Warping Distance -- Prompt Template
+
+task_description: |
+  Given `N` independent pairs of integer-valued time series, compute the exact Dynamic Time
+  Warping (DTW) distance for each pair.
+
+  For one pair with query sequence `Q` of length `m` and target sequence `T` of length `n`,
+  define a DP table `D` with shape `(m+1) x (n+1)`:
+
+  ```
+  D[0][0] = 0
+  D[i][0] = +inf for i > 0
+  D[0][j] = +inf for j > 0
+  D[i][j] = |Q[i-1] - T[j-1]| + min(D[i-1][j], D[i][j-1], D[i-1][j-1])
+  ```
+
+  The output for one pair is `D[m][n]`.
+
+interface: |
+  ```c
+  extern "C" void solution_compute(
+      int N,
+      int total_query_len,
+      int total_target_len,
+      const int* query_series,   // host, [total_query_len]
+      const int* target_series,  // host, [total_target_len]
+      const int* query_offsets,  // host, [N+1], CSR offsets into query_series
+      const int* target_offsets, // host, [N+1], CSR offsets into target_series
+      int* distances             // host, [N], output DTW distances
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - `query_offsets[p] ... query_offsets[p+1]-1` is the p-th query sequence.
+  - `target_offsets[p] ... target_offsets[p+1]-1` is the p-th target sequence.
+  - Sequence lengths vary across the batch.
+  - Values are 32-bit signed integers generated from random walks.
+
+output_contract: |
+  - `distances[p]` must equal the exact DTW distance for pair `p`.
+  - Output is one integer per pair.
+  - The implementation must be deterministic and synchronize before returning.
+
+algorithm_background: |
+  DTW is a classic elastic alignment algorithm used in speech recognition, signal matching,
+  sensor analytics, and time-series retrieval. The dependency pattern is a standard 2D dynamic
+  program with local dependencies on left, up, and upper-left cells.
+
+  The task exposes two kinds of GPU parallelism:
+  - inter-pair parallelism across independent series pairs;
+  - anti-diagonal wavefront parallelism within each DP table.
+
+hints_l2: |
+  - Exploit batch-level parallelism first: each pair is independent.
+  - Within a pair, cells on the same anti-diagonal are independent.
+  - Reuse workspace across calls when legal.
+  - Length variability can cause load imbalance; length bucketing may help.
+
+hints_l1: |
+  ### 1. Wavefront parallelism
+  `D[i][j]` depends only on neighboring cells from earlier anti-diagonals, so each anti-diagonal
+  can be processed in parallel.
+
+  ### 2. Rolling memory
+  The CPU reference uses only two rows. A correct GPU baseline may also use rolling rows or
+  rolling diagonals.
+
+  ### 3. Shared memory tiles
+  For medium-length series, shared-memory tiles can reduce global-memory traffic.
+
+  ### 4. Exactness
+  Distances are exact integers; do not prune or approximate the DP.

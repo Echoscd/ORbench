@@ -1,0 +1,86 @@
+# Monte Carlo Arithmetic Asian Option Pricing -- Prompt Template
+
+task_description: |
+  Given `N` independent option contracts and a shared matrix of pre-generated standard-normal
+  shocks, compute the Monte Carlo price of each arithmetic-average Asian option under a
+  geometric Brownian motion (GBM) model.
+
+  For contract `i`, parameters are:
+  - initial price `S0[i]`
+  - strike `K[i]`
+  - risk-free rate `r[i]`
+  - volatility `sigma[i]`
+  - maturity `T[i]`
+  - option type `option_type[i]` (0 = call, 1 = put)
+
+  For each Monte Carlo path `p` and step `s`:
+
+  ```
+  dt = T / num_steps
+  S <- S * exp((r - 0.5*sigma^2) * dt + sigma * sqrt(dt) * z[p, s])
+  average_price = mean of S over all time steps
+  payoff = max(average_price - K, 0)   // call
+         or max(K - average_price, 0)   // put
+  price = exp(-r*T) * mean(payoff over paths)
+  ```
+
+  The matrix `z[p, s]` is provided as input, so the task is deterministic.
+
+interface: |
+  ```c
+  extern "C" void solution_compute(
+      int N,
+      int num_paths,
+      int num_steps,
+      const float* s0,
+      const float* strike,
+      const float* rate,
+      const float* sigma,
+      const float* maturity,
+      const int* option_type,
+      const float* shocks,   // host, [num_paths * num_steps], row-major by path
+      float* prices          // host, [N]
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - The same pre-generated shock matrix is reused across all contracts.
+  - Contract arrays have length `N`.
+  - `option_type[i] = 0` means call, `1` means put.
+  - Outputs are deterministic floating-point prices.
+
+output_contract: |
+  - `prices[i]` must equal the Monte Carlo arithmetic-Asian price for contract `i`
+    under the provided shocks.
+  - Output is one float per contract.
+  - The implementation must be deterministic and synchronize before returning.
+
+algorithm_background: |
+  This is a classic embarrassingly-parallel simulation task from computational finance.
+  The main sources of parallelism are:
+  - independent contracts;
+  - independent Monte Carlo paths within each contract;
+  - reductions over path payoffs.
+
+  Because shocks are provided explicitly, correctness does not depend on RNG details.
+
+hints_l2: |
+  - Parallelize across contracts and across paths.
+  - Reuse the shared shock matrix efficiently.
+  - Use block-level or warp-level reductions for payoff accumulation.
+  - Avoid repeated allocations across calls.
+
+hints_l1: |
+  ### 1. Contract-level and path-level parallelism
+  Each contract is independent, and within a contract each path is independent until the final reduction.
+
+  ### 2. Shared shocks
+  All contracts use the same shock tensor. Cache and reuse it efficiently.
+
+  ### 3. Reduction
+  The only global aggregation is the average payoff across paths.
+
+  ### 4. Determinism
+  Do not change the provided shocks or introduce a different RNG.
