@@ -1,0 +1,49 @@
+{
+  "task_id": "bplustree_search",
+  "name": "B+ Tree Batch Exact Search",
+  "category": "search",
+  "difficulty": 3,
+  "tags": [
+    "bplustree",
+    "database_index",
+    "batched_queries",
+    "irregular_memory"
+  ],
+  "input_sizes": {
+    "small": {
+      "num_records": 32768,
+      "num_queries": 20000,
+      "order": 16,
+      "seed": 42
+    },
+    "medium": {
+      "num_records": 262144,
+      "num_queries": 200000,
+      "order": 16,
+      "seed": 42
+    },
+    "large": {
+      "num_records": 1048576,
+      "num_queries": 800000,
+      "order": 16,
+      "seed": 42
+    }
+  },
+  "correctness": {
+    "mode": "exact"
+  },
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "persistent_tree_data",
+    "batched_query_parallelism",
+    "irregular_memory_access",
+    "node_search_divergence",
+    "coalesced_query_reads"
+  ]
+}

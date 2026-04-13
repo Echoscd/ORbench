@@ -1,0 +1,37 @@
+{
+  "task_id": "hotspot_2d",
+  "name": "HotSpot 2D Thermal Simulation (Transient Solver)",
+  "category": "stencil_simulation",
+  "difficulty": 2,
+  "tags": ["stencil", "thermal_simulation", "finite_difference", "rodinia", "structured_grid"],
+  "interface_mode": "init_compute",
+
+  "input_sizes": {
+    "small":  {"rows": 256,  "cols": 256,  "iterations": 60,  "seed": 7, "output_stride": 97, "num_requests": 676},
+    "medium": {"rows": 512,  "cols": 512,  "iterations": 120, "seed": 7, "output_stride": 97, "num_requests": 2703},
+    "large":  {"rows": 1024, "cols": 1024, "iterations": 240, "seed": 7, "output_stride": 97, "num_requests": 10811}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0.02,
+    "rtol": 0.0
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "persistent_grid_data",
+    "ping_pong_buffers",
+    "tiled_stencil",
+    "coalesced_access",
+    "gather_sampled_outputs"
+  ]
+}

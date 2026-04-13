@@ -1,0 +1,90 @@
+# Parboil SpMV (JDS) -- Prompt Template
+
+task_description: |
+  Given a sparse matrix stored in JDS (Jagged Diagonal Storage) format and a dense
+  input vector `x`, compute the dense output vector `y = A x` in original row order.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int num_rows,
+      int num_cols,
+      int nnz,
+      int num_diags,
+      const int*   h_jad_ptr,
+      const int*   h_col_idx,
+      const float* h_values,
+      const int*   h_perm,
+      const int*   h_row_nnz,
+      const float* h_x
+  );
+
+  extern "C" void solution_compute(
+      float* h_y_out
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - `perm` maps permuted JDS row index to original row index
+  - `row_nnz` is sorted in non-increasing order and corresponds to permuted rows
+  - `jad_ptr[d] .. jad_ptr[d+1]-1` stores the entries of jagged diagonal `d`
+  - Small/medium/large increase both matrix size and total nonzeros
+
+output_contract: |
+  - Compute exactly the dense vector `y = A x`
+  - Return results in original row order (not permuted JDS row order)
+  - Numerical tolerance: `atol = 1e-3`
+  - `solution_compute` must be idempotent and synchronize before returning
+
+algorithm_background: |
+  JDS stores rows after sorting them by descending nonzero count.
+
+  Let `perm[rp]` be the original row index of permuted row `rp`.
+  For each jagged diagonal `d`, the entries for rows whose length exceeds `d`
+  are stored contiguously in:
+
+  - `values[jad_ptr[d] ... jad_ptr[d+1)-1]`
+  - `col_idx[jad_ptr[d] ... jad_ptr[d+1)-1]`
+
+  Then for each permuted row `rp`:
+
+  ```text
+  sum = 0
+  for d in [0, row_nnz[rp]):
+      idx = jad_ptr[d] + rp
+      sum += values[idx] * x[col_idx[idx]]
+  y[perm[rp]] = sum
+  ```
+
+  Because rows are sorted by length, `jad_ptr[d] + rp` is valid whenever `d < row_nnz[rp]`.
+
+hints_l2: |
+  - Copy all JDS arrays and the dense vector to GPU once in `solution_init`
+  - Use one thread per permuted row for a first correct implementation
+  - Accumulate the dot product for each row and scatter to `y[perm[rp]]`
+  - The sparse values/indices are read mostly contiguously; the main irregularity is `x[col_idx[idx]]`
+
+hints_l1: |
+  ### 1. Persistent Device State
+  Keep `jad_ptr`, `col_idx`, `values`, `perm`, `row_nnz`, and `x` on device across all timed calls.
+  Pre-allocate device output storage as well.
+
+  ### 2. Row-Parallel Mapping
+  Launch one thread for each permuted row `rp`.
+  The thread iterates over `d = 0 .. row_nnz[rp)-1`, computes `idx = jad_ptr[d] + rp`,
+  and accumulates into a register.
+
+  ### 3. Output Order
+  The JDS rows are permuted. The final answer must be written to original row order:
+  `y[perm[rp]] = sum`.
+
+  ### 4. Memory Behavior
+  Sparse values and column indices are packed contiguously per jagged diagonal,
+  which helps coalesced reads. The irregular access is the gather from `x[col_idx[idx]]`.
+
+  ### 5. Optional Optimizations
+  - read-only cache / texture-like access for `x`
+  - row blocking for long rows
+  - partial unrolling over jagged diagonals

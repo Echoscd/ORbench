@@ -1,0 +1,62 @@
+task_description: |
+  Given a flattened B+ tree stored in contiguous arrays and a batch of lookup keys,
+  return the matching value for each query key, or -1 if the key does not exist.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int num_nodes,
+      int order,
+      int max_keys,
+      int root_idx,
+      const int* h_is_leaf,
+      const int* h_key_counts,
+      const int* h_keys,
+      const int* h_children,
+      const int* h_values
+  );
+
+  extern "C" void solution_compute(
+      int num_queries,
+      const int* h_query_keys,
+      int* h_out_values
+  );
+  ```
+
+input_size_notes: |
+  The tree is read-only across all trials. Batched query count scales substantially from
+  small to large, so persistent GPU data and reuse across calls matter.
+
+output_contract: |
+  - `h_out_values[i]` must equal the exact payload for `h_query_keys[i]`
+  - If the key is absent, output `-1`
+  - Exact integer match is required
+  - `solution_compute` must synchronize before returning
+
+algorithm_background: |
+  The task performs exact-key B+ tree search over a flattened tree representation.
+  Internal nodes contain sorted separator keys and child pointers; leaves contain sorted
+  keys and payload values. Each query traverses from the root to one leaf.
+
+hints_l2: |
+  - Copy the tree arrays to device memory once in `solution_init`
+  - Query batch is embarrassingly parallel across keys
+  - Cache frequently-used metadata (like root index / max_keys) efficiently
+  - Watch for branch divergence in node traversal
+
+hints_l1: |
+  ### 1. Persistent Tree Storage
+  Store `is_leaf`, `key_counts`, `keys`, `children`, and `values` on the GPU once.
+  Avoid re-allocating or re-copying the tree per timed call.
+
+  ### 2. Query-Level Parallelism
+  The simplest mapping is one thread per query. For larger trees, one warp per query
+  may reduce divergence and allow cooperative key comparison inside a node.
+
+  ### 3. Internal Node Search
+  Each node stores at most `max_keys = order - 1` separator keys. Since this is small,
+  a simple linear search per node is acceptable; optimize memory layout first.
+
+  ### 4. Output Semantics
+  Return the payload value at the matching leaf key, or `-1` if no exact match exists.
+  Be careful not to confuse internal separator keys with payload-bearing leaf keys.

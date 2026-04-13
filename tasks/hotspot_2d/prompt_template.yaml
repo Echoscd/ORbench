@@ -1,0 +1,78 @@
+# HotSpot 2D Thermal Simulation -- Prompt Template
+
+task_description: |
+  Given an initial temperature grid and a power grid, run a 2D transient thermal
+  simulation for a fixed number of iterations using the HotSpot-style finite-difference
+  update. Return sampled entries from the final temperature grid.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int rows,
+      int cols,
+      int iterations,
+      const float* h_temp_init,
+      const float* h_power
+  );
+
+  extern "C" void solution_compute(
+      int output_stride,
+      float* h_sampled_out
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - `temp_init` and `power` are both row-major float grids of size `rows * cols`
+  - Small/medium/large increase both grid size and number of time steps
+  - `output_stride` is only for output sampling; the full grid must still be simulated
+
+output_contract: |
+  - Simulate exactly `iterations` HotSpot updates
+  - Flatten the final grid row-major and write every `output_stride`-th value into `h_sampled_out`
+  - Sample count is `ceil(rows * cols / output_stride)`
+  - Numerical tolerance: `atol = 0.02`
+  - `solution_compute` must be idempotent and synchronize before returning
+
+algorithm_background: |
+  For each time step, every cell is updated from:
+  - local power dissipation,
+  - north/south temperature diffusion,
+  - east/west temperature diffusion,
+  - ambient cooling through `Rz`.
+
+  Interior cells use a 5-point stencil. Boundary cells use one-sided versions of the same
+  update rule. After each iteration, the newly computed grid becomes the current grid.
+
+hints_l2: |
+  - Copy `temp_init` and `power` to the GPU once in `solution_init`
+  - Maintain two device buffers and swap them every iteration
+  - Use one thread per grid cell for the stencil update
+  - Handle boundaries either in one kernel with conditionals or separate kernels
+  - Gather sampled outputs efficiently instead of copying the whole grid back if possible
+
+hints_l1: |
+  ### 1. Persistent Device Buffers
+  Store `temp_init`, `power`, and two working temperature buffers persistently on device.
+  Each `solution_compute` should reset the working state from the initial temperature field.
+
+  ### 2. Ping-Pong Iteration
+  Use two buffers `cur` and `next`. Each time step reads from `cur` and writes to `next`,
+  then swaps pointers.
+
+  ### 3. Stencil Structure
+  For interior cell `(r, c)`:
+  - read center, north, south, west, east
+  - compute the HotSpot delta using `Rx`, `Ry`, `Rz`, `Cap`, `step`, and `power[r,c]`
+  - write updated temperature to `next[r,c]`
+
+  ### 4. Boundary Handling
+  Corners and edges use slightly different formulas with fewer neighbors.
+  Correct boundary handling is essential for validation.
+
+  ### 5. Output Sampling
+  Only sampled outputs are required. After the last iteration, either:
+  - launch a gather kernel that writes sampled elements into a compact device buffer, then copy it to host; or
+  - copy the full final grid and sample on host.
+  The first option is usually faster.

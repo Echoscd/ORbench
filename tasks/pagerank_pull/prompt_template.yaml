@@ -1,0 +1,93 @@
+# PageRank Pull (Jacobi) -- Prompt Template
+
+task_description: |
+  Given a directed graph, compute PageRank scores for all vertices using the
+  pull-direction Jacobi-style iterative algorithm.
+
+  The graph is provided as inbound CSR:
+  - `in_row_offsets[V+1]`: incoming neighbors of vertex `u` are in
+    `in_col_indices[in_row_offsets[u] : in_row_offsets[u+1]]`
+  - `in_col_indices[E]`: source vertices of inbound edges
+  - `out_degree[V]`: outgoing degree of each vertex
+
+  Parameters:
+  - damping factor `d`
+  - convergence tolerance `epsilon`
+  - maximum iterations `max_iters`
+
+  Initialization:
+  - `scores[u] = 1 / V` for all vertices
+  - `base_score = (1 - d) / V`
+
+  Iteration:
+  1. `outgoing_contrib[v] = scores[v] / out_degree[v]`
+  2. `new_scores[u] = base_score + d * sum(outgoing_contrib[v] for v in in_neigh(u))`
+  3. accumulate `error += abs(new_scores[u] - scores[u])`
+  4. swap score buffers
+  5. stop early if `error < epsilon`
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int V,
+      int E,
+      int max_iters,
+      float damping,
+      float epsilon,
+      const int* in_row_offsets,
+      const int* in_col_indices,
+      const int* out_degree
+  );
+
+  extern "C" void solution_compute(
+      float* scores_out   // host, [V]
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - small:   4,096 vertices, avg out-degree ≈ 8
+  - medium: 32,768 vertices, avg out-degree ≈ 12
+  - large: 131,072 vertices, avg out-degree ≈ 12
+  - The graph generator ensures every vertex has at least one outgoing edge.
+
+output_contract: |
+  - `scores_out[u]` must be the final PageRank score of vertex `u`
+  - Output length is exactly `V`
+  - Results must be numerically close to the CPU reference within task tolerance
+  - `solution_compute` must be idempotent and synchronize before returning
+
+algorithm_background: |
+  This task is adapted from the GAP Benchmark Suite PageRank kernel.
+  The pull-direction Jacobi method is a classic sparse graph analytic kernel:
+  each iteration computes all new vertex scores from the previous iteration's
+  scores using inbound neighbors.
+
+  GPU opportunities:
+  - vertices are independent within an iteration;
+  - graph structure is read-only and can remain resident on device;
+  - incoming-neighbor reductions dominate compute and can be parallelized.
+
+hints_l2: |
+  - Copy graph arrays to GPU once in `solution_init`
+  - Keep score buffers and outgoing-contribution buffer persistent on device
+  - Use one thread block per vertex range or warp-centric handling for high-degree vertices
+  - Reinitialize score buffers inside `solution_compute` so repeated runs are deterministic
+
+hints_l1: |
+  ### 1. Persistent device graph storage
+  `in_row_offsets`, `in_col_indices`, and `out_degree` are immutable. Upload them once.
+
+  ### 2. Double-buffered scores
+  Use two score arrays and swap after each iteration. This matches Jacobi semantics.
+
+  ### 3. Outgoing contributions
+  Compute `scores[v] / out_degree[v]` into a temporary buffer before each pull step.
+
+  ### 4. Error reduction
+  Accumulate absolute score changes across vertices. A block-level reduction followed by
+  a global reduction is preferable to a single global atomic for every vertex.
+
+  ### 5. Reset between runs
+  `solution_compute` is called repeatedly by the harness. Make sure score buffers are reset.

@@ -1,0 +1,53 @@
+{
+  "task_id": "pagerank_pull",
+  "name": "GAPBS PageRank Pull (Jacobi)",
+  "category": "graph_analytics",
+  "difficulty": 3,
+  "tags": [
+    "PageRank",
+    "graph",
+    "CSR",
+    "pull",
+    "Jacobi",
+    "sparse"
+  ],
+  "input_sizes": {
+    "small": {
+      "V": 4096,
+      "avg_out_degree": 8,
+      "max_iters": 20,
+      "seed": 42
+    },
+    "medium": {
+      "V": 32768,
+      "avg_out_degree": 12,
+      "max_iters": 20,
+      "seed": 42
+    },
+    "large": {
+      "V": 131072,
+      "avg_out_degree": 12,
+      "max_iters": 20,
+      "seed": 42
+    }
+  },
+  "correctness": {
+    "mode": "numerical",
+    "atol": 1e-4
+  },
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "persistent_graph_data",
+    "pull_direction_updates",
+    "edge_parallel_reduction",
+    "coalesced_csr_access",
+    "double_buffer_scores",
+    "high_degree_load_balancing"
+  ]
+}

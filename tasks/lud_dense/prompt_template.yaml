@@ -1,0 +1,71 @@
+task_description: |
+  Given a dense row-major square matrix `A` of size `n x n`, compute an in-place
+  LU decomposition without pivoting using the Doolittle form:
+
+    A = L * U
+
+  where `L` is unit-lower-triangular and `U` is upper-triangular.
+
+  After the decomposition, compute the vector
+
+    w = (L * U) * 1
+
+  where `1` is the all-ones vector of length `n`.
+
+  The matrix is guaranteed to admit LU decomposition without pivoting.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int n,
+      const double* h_matrix
+  );
+
+  extern "C" void solution_compute(
+      double* h_out_w
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - small:   n = 128
+  - medium:  n = 384
+  - large:   n = 768
+  - matrix is dense row-major float64
+
+output_contract: |
+  - `h_out_w[i]` must equal the i-th entry of `(L * U) * 1`
+  - output length is `n`
+  - exact text match is expected against the reference output
+  - `solution_compute` must synchronize before returning
+
+algorithm_background: |
+  This task is adapted from Rodinia's LUD benchmark. The core computation is
+  dense LU decomposition. Although pivot steps are sequential, each step exposes
+  substantial parallel work in the current row/column updates and especially in
+  the trailing submatrix rank-1 update.
+
+hints_l2: |
+  - Copy the input matrix to device memory once in `solution_init`
+  - Preserve a persistent working matrix on device for repeated timed calls
+  - The trailing submatrix update dominates runtime and is the main target for GPU parallelism
+  - After decomposition, compute `w` from the compact `L/U` storage without reconstructing a full dense matrix
+
+hints_l1: |
+  ### 1. Compact LU storage
+  Store `L` and `U` in a single dense matrix: `U` on and above the diagonal, `L`
+  below the diagonal with an implicit unit diagonal.
+
+  ### 2. Per-pivot structure
+  For each pivot `k`, update:
+  - `U[k, j]` for `j >= k`
+  - `L[i, k]` for `i > k`
+  - trailing block `A[i, j] -= L[i, k] * U[k, j]`
+
+  ### 3. Output computation
+  First compute `u1 = U * 1`, then `w = L * u1`. Because `L` has unit diagonal,
+  `w[i] = u1[i] + sum_{j < i} L[i, j] * u1[j]`.
+
+  ### 4. Numerical assumptions
+  The provided inputs are constructed so that LU without pivoting is valid.

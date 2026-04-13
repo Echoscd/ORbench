@@ -1,0 +1,48 @@
+{
+  "task_id": "bfs_frontier",
+  "name": "Rodinia BFS Frontier Traversal",
+  "category": "graph_traversal",
+  "difficulty": 2,
+  "tags": [
+    "BFS",
+    "graph",
+    "CSR",
+    "frontier",
+    "level_synchronous"
+  ],
+  "input_sizes": {
+    "small": {
+      "V": 5000,
+      "avg_degree": 8,
+      "seed": 42
+    },
+    "medium": {
+      "V": 100000,
+      "avg_degree": 8,
+      "seed": 42
+    },
+    "large": {
+      "V": 400000,
+      "avg_degree": 8,
+      "seed": 42
+    }
+  },
+  "correctness": {
+    "mode": "exact"
+  },
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 120
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "persistent_graph_data",
+    "frontier_parallelism",
+    "warp_centric_expansion",
+    "load_balancing_for_high_degree_vertices",
+    "coalesced_csr_access",
+    "bitmap_or_queue_frontier"
+  ]
+}

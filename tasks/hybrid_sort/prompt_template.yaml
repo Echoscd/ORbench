@@ -1,0 +1,61 @@
+task_description: |
+  Given an array of 32-bit integer keys, sort the array in nondecreasing order.
+
+interface: |
+  ```c
+  // Called once before timing. Receive host-side input and perform cudaMalloc / H2D etc.
+  extern "C" void solution_init(
+      int N,
+      const int* h_keys   // host, N int32 keys
+  );
+
+  // Called multiple times (warmup + timed). MUST be idempotent.
+  // Writes the fully sorted key array back to host.
+  extern "C" void solution_compute(
+      int* h_sorted_keys  // host, N int32 outputs
+  );
+  ```
+
+input_size_notes: |
+  The input is a single 1D key array. `solution_compute` must sort exactly the same keys on every call.
+
+output_contract: |
+  - `h_sorted_keys` must contain all input keys sorted in nondecreasing order.
+  - The output must be deterministic and complete when `solution_compute` returns.
+  - `solution_compute` must synchronize before returning.
+
+algorithm_background: |
+  Rodinia's Hybrid Sort benchmark uses a hybrid strategy:
+  - first, a parallel bucket-sort partitions the input into many sublists
+  - then, those sublists are sorted in parallel using merge-sort
+
+  In this ORBench adaptation, the correctness target is simply the final sorted key array.
+
+hints_l2: |
+  - Copy the input key array to GPU once in `solution_init`.
+  - Keep both an immutable original copy and a reusable work buffer on device.
+  - Each `solution_compute` call can restore the work buffer from the original keys, then sort in-place.
+  - Parallel bucket classification and local block sorting are natural first steps.
+
+hints_l1: |
+  ### 1. Persistent device buffers
+  Allocate device memory for:
+  - original unsorted keys
+  - working key buffer
+  - any temporary bucket / merge buffers
+
+  Copy the input keys to `d_keys_original` once in `solution_init`.
+
+  ### 2. Idempotence
+  Because `solution_compute` is called repeatedly, do NOT destroy the only copy of the input.
+  At the start of each call, restore the working buffer from `d_keys_original`.
+
+  ### 3. Hybrid strategy
+  A good GPU strategy is:
+  - classify keys into buckets in parallel
+  - compute bucket offsets using prefix sums
+  - scatter keys into contiguous bucket regions
+  - sort each bucket locally, then merge if needed
+
+  ### 4. Simpler fallback
+  A simpler but still valid approach is a device-side bitonic or merge sort, as long as correctness holds.

@@ -1,0 +1,35 @@
+{
+  "task_id": "needleman_wunsch",
+  "name": "Needleman-Wunsch Wavefront Alignment Score",
+  "category": "bioinformatics",
+  "difficulty": 3,
+  "tags": ["dynamic_programming", "wavefront", "anti_diagonal", "sequence_alignment", "bioinformatics"],
+
+  "input_sizes": {
+    "small":  {"len_a": 512,  "len_b": 512,  "alphabet_size": 16, "gap_penalty": 5, "seed": 42},
+    "medium": {"len_a": 2048, "len_b": 2048, "alphabet_size": 16, "gap_penalty": 5, "seed": 42},
+    "large":  {"len_a": 3072, "len_b": 3072, "alphabet_size": 16, "gap_penalty": 5, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "exact"
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 120
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "anti_diagonal_wavefront_parallelism",
+    "two_row_or_tiled_frontier_storage",
+    "shared_memory_tile_reuse",
+    "coalesced_sequence_access",
+    "persistent_device_residency",
+    "blockwise_synchronization_between_wavefront_steps"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "task_id": "hybrid_sort",
+  "name": "Rodinia Hybrid Sort (Key Sorting)",
+  "category": "sorting",
+  "difficulty": 2,
+  "tags": ["sorting", "rodinia", "bucket_sort", "merge_sort", "key_sort"],
+
+  "input_sizes": {
+    "small":  {"N": 16384,   "seed": 42, "key_range": 1048576},
+    "medium": {"N": 262144,  "seed": 43, "key_range": 16777216},
+    "large":  {"N": 1048576, "seed": 44, "key_range": 268435456}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 0
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "persistent_input_buffers",
+    "parallel_bucket_partition",
+    "parallel_local_sort",
+    "merge_hierarchy",
+    "coalesced_reorder"
+  ]
+}

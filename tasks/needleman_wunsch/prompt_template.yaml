@@ -1,0 +1,73 @@
+task_description: |
+  Given two encoded sequences, a substitution score matrix, and a constant gap penalty,
+  compute the final row of the Needleman-Wunsch dynamic-programming table for global alignment.
+
+  The recurrence is:
+
+    DP[i][0] = -i * gap_penalty
+    DP[0][j] = -j * gap_penalty
+    DP[i][j] = max(
+        DP[i-1][j-1] + score_matrix[seq_a[i-1], seq_b[j-1]],
+        DP[i-1][j]   - gap_penalty,
+        DP[i][j-1]   - gap_penalty
+    )
+
+  Only the final DP row `DP[len_a][0..len_b]` must be returned.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int len_a,
+      int len_b,
+      int alphabet_size,
+      int gap_penalty,
+      const int* h_seq_a,
+      const int* h_seq_b,
+      const int* h_score_matrix
+  );
+
+  extern "C" void solution_compute(
+      int* h_out_last_row
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - small:   512 x 512 DP grid
+  - medium:  2048 x 2048 DP grid
+  - large:   3072 x 3072 DP grid
+  - alphabet size is 16
+  - score matrix is a dense integer substitution table of shape [alphabet_size, alphabet_size]
+
+output_contract: |
+  - `h_out_last_row[j]` must equal `DP[len_a][j]`
+  - Output length is `len_b + 1`
+  - Exact integer match is required
+  - `solution_compute` must synchronize before returning
+
+algorithm_background: |
+  Needleman-Wunsch is a classic global sequence alignment algorithm. Its key parallel structure
+  is the anti-diagonal / wavefront dependency pattern: each cell depends only on north,
+  west, and northwest neighbors, so one anti-diagonal becomes ready once the previous one completes.
+
+hints_l2: |
+  - Copy the sequences and substitution matrix to the GPU once in `solution_init`
+  - Preserve only the data needed for repeated timed calls
+  - The main parallelism is across cells on the same anti-diagonal
+  - Rolling-frontier storage may be enough if you only need the final row
+
+hints_l1: |
+  ### 1. Wavefront structure
+  Cells on anti-diagonal `i + j = const` are independent once the previous anti-diagonal is done.
+  Map one thread to one cell within the current anti-diagonal.
+
+  ### 2. Persistent inputs
+  Keep `seq_a`, `seq_b`, and `score_matrix` resident on device memory after `solution_init`.
+
+  ### 3. Memory strategy
+  Since the output is only the final row, you may not need the full DP matrix.
+  Rolling rows or block-frontiers can reduce memory footprint.
+
+  ### 4. Integer exactness
+  The benchmark expects exact integer DP values, so avoid any floating-point reformulation.

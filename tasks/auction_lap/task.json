@@ -1,0 +1,29 @@
+{
+  "task_id": "auction_lap",
+  "name": "Auction Algorithm for Dense Linear Assignment",
+  "category": "optimization",
+  "difficulty": 3,
+  "tags": ["optimization", "assignment", "auction_algorithm", "lap", "dense_matrix"],
+  "interface_mode": "init_compute",
+  "input_sizes": {
+    "small":  {"n": 256,  "seed": 101},
+    "medium": {"n": 768,  "seed": 202},
+    "large":  {"n": 1536, "seed": 303}
+  },
+  "correctness": {
+    "mode": "exact"
+  },
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 300
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "parallel_bidding_per_unassigned_row",
+    "columnwise_max_bid_reduction",
+    "persistent_matrix_residency",
+    "batched_argmax_over_adjusted_values"
+  ]
+}

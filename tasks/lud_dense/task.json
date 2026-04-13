@@ -1,0 +1,45 @@
+{
+  "task_id": "lud_dense",
+  "name": "Rodinia LUD Dense LU Decomposition",
+  "category": "dense_linear_algebra",
+  "difficulty": 3,
+  "tags": [
+    "dense_linear_algebra",
+    "lu_decomposition",
+    "factorization",
+    "rodinia",
+    "matrix"
+  ],
+  "input_sizes": {
+    "small": {
+      "n": 128,
+      "seed": 42
+    },
+    "medium": {
+      "n": 384,
+      "seed": 42
+    },
+    "large": {
+      "n": 768,
+      "seed": 42
+    }
+  },
+  "correctness": {
+    "mode": "exact"
+  },
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 120
+  },
+  "build_command": "",
+  "extra_build_flags": "",
+  "gpu_optimization_points": [
+    "panelwise_factorization_with_tiled_trailing_update",
+    "shared_memory_tiles_for_submatrix_updates",
+    "persistent_device_residency_of_matrix_and_output",
+    "coalesced_row_major_access_for_dense_tiles",
+    "separate_kernels_for_panel_and_update_steps",
+    "blockwise_parallel_reduction_for_output_vector"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "task_id": "pathfinder",
+  "name": "Pathfinder Grid Dynamic Programming",
+  "category": "dynamic_programming",
+  "difficulty": 2,
+  "tags": ["grid_dp", "stencil_like", "wavefront", "rodinia"],
+
+  "input_sizes": {
+    "small":  {"rows": 1024, "cols": 2048, "seed": 42},
+    "medium": {"rows": 4096, "cols": 4096, "seed": 42},
+    "large":  {"rows": 8192, "cols": 8192, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "exact",
+    "atol": 0.0,
+    "rtol": 0.0
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+
+  "interface_mode": "init_compute",
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "persistent_grid_data",
+    "column_parallel_update",
+    "double_buffer_rows",
+    "coalesced_memory_access",
+    "shared_memory_tiling"
+  ]
+}

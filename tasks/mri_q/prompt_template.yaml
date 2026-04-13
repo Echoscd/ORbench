@@ -1,0 +1,68 @@
+# MRI-Q — Prompt Template
+
+task_description: |
+  Given K-space sample coordinates `(kx, ky, kz)` with complex values `(phi_r, phi_i)` and
+  X-space output coordinates `(x, y, z)`, compute the complex Q value for every X-space point.
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int num_k,
+      int num_x,
+      const float* h_kx,
+      const float* h_ky,
+      const float* h_kz,
+      const float* h_phi_r,
+      const float* h_phi_i,
+      const float* h_x,
+      const float* h_y,
+      const float* h_z
+  );
+
+  extern "C" void solution_compute(
+      float* h_qr,
+      float* h_qi
+  );
+
+  extern "C" void solution_free(void);
+  ```
+
+output_contract: |
+  - `h_qr[i]` and `h_qi[i]` must contain the real and imaginary parts of the Q value
+    for X-space point `i`.
+  - `solution_compute` must be idempotent and must synchronize before returning.
+  - Validation uses a sampled text output, but the kernel must compute all `num_x` outputs.
+
+algorithm_background: |
+  For each output point `i`, compute:
+
+    arg = 2*pi*(kx[k]*x[i] + ky[k]*y[i] + kz[k]*z[i])
+    c = cos(arg), s = sin(arg)
+
+    qr[i] += phi_r[k]*c - phi_i[k]*s
+    qi[i] += phi_r[k]*s + phi_i[k]*c
+
+  over all `k = 0..num_k-1`.
+
+hints_l2: |
+  - Copy all K-space and X-space arrays to GPU once in `solution_init`
+  - Assign one thread per X-space output point
+  - Tile K-space data to improve cache reuse
+  - Use `__sinf/__cosf` or `sincosf` when appropriate
+
+hints_l1: |
+  ### 1. Persistent data
+  Keep all input arrays on device across repeated calls.
+
+  ### 2. Parallelization strategy
+  A natural mapping is one thread per output point `i`.
+  Each thread loops over all K-space samples and accumulates one complex result.
+
+  ### 3. Math optimization
+  Use `sincosf(arg, &s, &c)` instead of separate `sinf/cosf` when possible.
+
+  ### 4. Tiling K-space
+  For larger `num_k`, stage chunks of `(kx, ky, kz, phi_r, phi_i)` in shared memory.
+
+  ### 5. Output
+  Write full `num_x` outputs to device memory and copy them back to `h_qr`/`h_qi`.

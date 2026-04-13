@@ -1,0 +1,81 @@
+# Auction LAP -- Prompt Template
+
+task_description: |
+  Solve a dense linear assignment problem (LAP) with the auction algorithm.
+
+  Input is an `n x n` integer profit matrix `profit` stored in row-major order.
+  The objective is to assign each row to exactly one unique column so that the
+  total profit is maximized.
+
+  The classic auction method maintains a price for each column. Each unassigned
+  row independently finds its best and second-best adjusted values:
+
+      adjusted(i, j) = profit[i, j] - price[j]
+
+  It then bids on the best column with increment:
+
+      bid = best_adjusted - second_best_adjusted + eps
+
+  Each column accepts the highest bid, updates its price, and becomes owned by
+  the winning row. Repeat until all rows are assigned.
+
+interface: |
+  ```c
+  extern "C" void solution_init(int n, const int* h_profit);
+  extern "C" void solution_compute(long long* out_total_profit);
+  extern "C" void solution_free(void);
+  ```
+
+input_size_notes: |
+  - `profit` is dense, row-major, shape `[n, n]`
+  - sizes:
+    - small:  n = 256
+    - medium: n = 768
+    - large:  n = 1536
+  - matrix entries are nonnegative int32 profits
+
+output_contract: |
+  - Write exactly one value: the optimal total profit
+  - The result must match the CPU reference exactly
+  - `solution_compute` must be deterministic and synchronize before returning
+
+algorithm_background: |
+  Auction algorithm outline:
+
+  1. Initialize all column prices to zero and all rows as unassigned.
+  2. While some row is unassigned:
+     - for each unassigned row, compute the best and second-best adjusted values
+     - bid on the best column by the gap + eps
+     - for each column, keep only the highest bid
+     - the winning row takes ownership of that column
+     - the previous owner (if any) becomes unassigned
+  3. Sum `profit[i, assigned_col[i]]` over all rows.
+
+  For integer profits, choosing `eps < 1/n` is enough to recover an exact optimum.
+
+hints_l2: |
+  - Keep `profit` resident on device after `solution_init`
+  - One block or warp can process one row's bidding step
+  - Use a reduction to find best and second-best adjusted values per row
+  - Use another reduction / atomicMax-style scheme to determine winning bids per column
+
+hints_l1: |
+  ### 1. Persistent GPU Data
+  Copy the `profit` matrix to device in `solution_init` and keep reusable scratch
+  buffers for prices, owners, bids, and temporary maxima.
+
+  ### 2. Bidding Kernel
+  For each currently unassigned row:
+  - scan all columns
+  - track best and second-best adjusted values
+  - emit a single bid (target column, bid increment)
+
+  ### 3. Winner Selection
+  Reduce competing bids per column to the highest bidder, then update:
+  - column price
+  - column owner
+  - row assignment state
+
+  ### 4. Convergence Loop
+  Repeat until no row remains unassigned. Then sum the matched profits into a
+  single 64-bit output.

@@ -1,0 +1,89 @@
+# Pathfinder Grid Dynamic Programming -- Prompt Template
+
+task_description: |
+  Given a 2D grid of nonnegative integer costs, compute the minimum accumulated
+  path cost row by row.
+
+  The path starts from the first row. To reach cell `(r, c)` in row `r > 0`,
+  you may come from one of three cells in the previous row:
+  - `(r-1, c-1)`
+  - `(r-1, c)`
+  - `(r-1, c+1)`
+
+  with normal boundary checks at the left/right edges.
+
+  The recurrence is:
+  `dp[r][c] = wall[r][c] + min(dp[r-1][c-1], dp[r-1][c], dp[r-1][c+1])`
+
+  The output is the final DP row after processing all rows.
+
+interface: |
+  ```c
+  // Called once before timing. Receive host-side grid, do cudaMalloc / H2D etc.
+  extern "C" void solution_init(
+      int rows,
+      int cols,
+      const int* wall              // host, [rows * cols], row-major
+  );
+
+  // Called multiple times (warmup + timed). MUST be idempotent.
+  // Writes the final DP row to `output`.
+  extern "C" void solution_compute(
+      int* output                  // host, [cols]
+  );
+
+  extern "C" void solution_free();
+  ```
+
+input_size_notes: |
+  - **small**: rows=1024, cols=2048
+  - **medium**: rows=4096, cols=4096
+  - **large**: rows=8192, cols=8192
+  - Grid values are random nonnegative int32 costs in `[0, 9]`
+  - `wall[r * cols + c]` is row-major
+
+output_contract: |
+  - `output[c]` must equal the final accumulated cost for column `c` in the last row
+  - Output must match the CPU reference exactly
+  - `solution_compute` must be idempotent and synchronize before returning
+
+algorithm_background: |
+  This is a row-wise dynamic programming kernel from the Rodinia benchmark suite.
+  The dependency is sequential across rows, but all columns within one row can be
+  computed independently once the previous row is available.
+
+  A standard implementation keeps only two rows:
+  - `prev[c]` = DP values for row `r-1`
+  - `curr[c]` = DP values for row `r`
+
+  Then swap the two buffers after each row.
+
+hints_l2: |
+  - Copy the grid to GPU once in `solution_init`
+  - Keep only two device row buffers for the DP state
+  - Launch one thread per column for each row update
+  - Reuse allocations across repeated `solution_compute` calls
+
+hints_l1: |
+  ### 1. Persistent device data
+  Copy `wall` to device memory once in `solution_init`, and allocate two device
+  DP row buffers plus one device output buffer.
+
+  ### 2. Two-row buffering
+  The full DP matrix is unnecessary. Only the previous row and current row are needed.
+  This reduces device memory and keeps the implementation simple.
+
+  ### 3. Column-parallel kernel
+  For a fixed row `r`, launch a 1D kernel over columns:
+  - read `prev[c]`
+  - optionally read `prev[c-1]` and `prev[c+1]`
+  - compute the minimum predecessor
+  - write `curr[c] = wall[r, c] + min_pred`
+
+  ### 4. Shared-memory tiling
+  For better performance, each block can cache a tile of `prev` into shared memory,
+  including one-cell halos on both sides.
+
+  ### 5. Synchronization model
+  Rows must be processed in order, so `solution_compute` will typically loop over rows
+  on the host, launching one kernel per row (or a fused strategy if carefully designed).

@@ -1,0 +1,78 @@
+# BFS Frontier Traversal -- Prompt Template
+
+task_description: |
+  Given an unweighted graph in CSR format and one source vertex, compute the BFS
+  distance (hop count) from the source to every vertex.
+
+  The graph is stored as CSR:
+  - `row_offsets[V+1]`: neighbors of vertex `u` are in
+    `col_indices[row_offsets[u] : row_offsets[u+1]]`
+  - `col_indices[E]`: destination vertices
+
+  Distances are integer hop counts:
+  - `dist[source] = 0`
+  - if `v` is unreachable from `source`, output `-1`
+
+interface: |
+  ```c
+  extern "C" void solution_init(
+      int V,
+      int E,
+      int source,
+      const int* row_offsets,
+      const int* col_indices
+  );
+
+  extern "C" void solution_compute(
+      int* distances   // host, [V]
+  );
+  ```
+
+input_size_notes: |
+  - small:   5,000 vertices, average degree ≈ 8
+  - medium: 100,000 vertices, average degree ≈ 8
+  - large: 400,000 vertices, average degree ≈ 8
+  - The input graph is generated to be connected, undirected, then stored as
+    directed CSR edges in both directions.
+
+output_contract: |
+  - `distances[v]` must equal the BFS hop distance from `source` to `v`
+  - Unreachable vertices must be `-1`
+  - Results must match the CPU reference exactly
+  - `solution_compute` must be idempotent and synchronize before returning
+
+algorithm_background: |
+  Level-synchronous BFS expands one frontier at a time:
+  1. Initialize `dist[source] = 0`, frontier = {source}
+  2. For each vertex in the current frontier, scan its outgoing neighbors
+  3. Any undiscovered neighbor gets distance `level + 1` and joins the next frontier
+  4. Repeat until the frontier is empty
+
+  GPU opportunities:
+  - vertices in the current frontier are independent;
+  - neighbor scans can be parallelized;
+  - CSR graph can stay resident on device across repeated runs.
+
+hints_l2: |
+  - Copy CSR graph to GPU once in `solution_init`
+  - Keep device-side `dist`, current frontier, and next frontier buffers persistent
+  - Use one thread per frontier vertex or one warp per high-degree vertex
+  - Reset only the mutable traversal buffers between repeated `solution_compute` calls
+
+hints_l1: |
+  ### 1. Persistent graph storage
+  Copy `row_offsets` and `col_indices` once in `solution_init`.
+  Reuse them across all warmup and timed runs.
+
+  ### 2. Frontier-based traversal
+  Maintain two frontier buffers: current and next.
+  Each BFS level launches a kernel over the current frontier.
+
+  ### 3. Distance / visited marking
+  Use `dist[v] == -1` as the undiscovered marker.
+  When multiple threads race to discover the same vertex, use an atomicCAS on
+  `dist[v]` from `-1` to `level + 1` before appending it to the next frontier.
+
+  ### 4. Reset between runs
+  Because `solution_compute` is called many times, make sure all mutable buffers
+  are reset so the routine is idempotent.

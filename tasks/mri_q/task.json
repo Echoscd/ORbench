@@ -1,0 +1,36 @@
+{
+  "task_id": "mri_q",
+  "name": "Parboil MRI-Q Reconstruction (Q Matrix)",
+  "category": "medical_imaging",
+  "difficulty": 3,
+  "tags": ["parboil", "mri", "complex_accumulation", "trigonometric", "compute_bound"],
+
+  "input_sizes": {
+    "small":  {"num_k": 1024, "num_x": 4096,  "sample_stride": 64, "seed": 42},
+    "medium": {"num_k": 2048, "num_x": 16384, "sample_stride": 64, "seed": 42},
+    "large":  {"num_k": 4096, "num_x": 32768, "sample_stride": 64, "seed": 42}
+  },
+
+  "correctness": {
+    "mode": "numerical",
+    "atol": 1e-3
+  },
+
+  "timing": {
+    "warmup": 3,
+    "trials": 10,
+    "timeout": 180
+  },
+
+  "build_command": "",
+  "extra_build_flags": "",
+
+  "gpu_optimization_points": [
+    "persistent_input_data",
+    "one_thread_per_x_point",
+    "tile_k_space",
+    "shared_or_constant_memory",
+    "loop_unrolling",
+    "coalesced_output_write"
+  ]
+}
