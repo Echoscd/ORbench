@@ -21,7 +21,7 @@ import argparse, os, tarfile, sys, json, hashlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_REPO = "orbench/orbench-data"  # change to your real repo id
+DEFAULT_REPO = "Cosmoscd/AccelEval"
 
 
 def sha256(path):
