@@ -34,10 +34,10 @@ GENERIC_CONSTRAINTS_INIT_COMPUTE = """\
 - Unreachable / invalid results use `1e30f`"""
 
 GENERIC_CONSTRAINTS_COMPUTE_ONLY = """\
-- All functions use `extern "C"` linkage
-- All parameters to `solution_compute` are **host pointers**; you manage H2D/D2H yourself
-- There is NO `solution_init`; do ALL work inside `solution_compute` (including `cudaMalloc`, H2D, kernels, D2H)
-- `solution_free` is optional (the framework provides a weak no-op default)
+- `solution_compute` uses `extern "C"` linkage
+- All parameters are **host pointers**; you manage H2D/D2H yourself
+- Do ALL work inside `solution_compute` (including `cudaMalloc`, H2D, kernels, D2H, and any cleanup)
+- `solution_compute` is called multiple times (warmup + timed trials); it must be idempotent
 - Do NOT use any file I/O (`fopen`, `printf`, `fprintf`, etc.)
 - Unreachable / invalid results use `1e30f`"""
 
@@ -59,7 +59,7 @@ Return your complete CUDA implementation in a **single** fenced code block:
 ```
 
 Do NOT include any explanation outside the code block. The code block must contain the full,
-compilable `.cu` source with `solution_compute` and `solution_free`. Do NOT write `solution_init`."""
+compilable `.cu` source with a single `solution_compute` function."""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -173,9 +173,10 @@ def generate_prompt(task_id: str, level: int, split_kernels: bool = False) -> st
     interface_code = tmpl.get("interface", "").strip()
     if task.interface_mode == "compute_only":
         interface_intro = (
-            "Implement `solution_compute` as an `extern \"C\"` function in a single `.cu` file. "
-            "There is NO `solution_init` — do ALL setup inside `solution_compute`. "
-            "`solution_free` is optional (has a weak default). "
+            "Implement a single `solution_compute` `extern \"C\"` function in one `.cu` file. "
+            "It receives all inputs as host pointers, does the full work on GPU "
+            "(allocation, H2D, kernel, D2H, free), and synchronizes before returning. "
+            "It is called multiple times and must be idempotent. "
             "**Do NOT** write `main()`, do NOT read/write any files."
         )
     else:
@@ -183,7 +184,6 @@ def generate_prompt(task_id: str, level: int, split_kernels: bool = False) -> st
             "Implement `solution_init` and `solution_compute` as `extern \"C\"` functions "
             "in a single `.cu` file. `solution_init` receives inputs once; "
             "`solution_compute` is called multiple times (must synchronize before returning). "
-            "`solution_free` is optional (has a weak default). "
             "**Do NOT** write `main()`, do NOT read/write any files."
         )
     interface_section = f"\n\n## Interface\n\n{interface_intro}\n\n{interface_code}\n"

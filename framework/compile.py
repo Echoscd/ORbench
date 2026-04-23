@@ -20,6 +20,34 @@ class CompileResult:
     stderr: str = ""
 
 
+# Auto-injected prefix: forward-declares solution_free with a weak no-op default.
+# This rescues two common LLM failure modes without regenerating code:
+#   1. LLM defines solution_free() at the bottom of the file but calls it from
+#      solution_init() at the top -> forward-reference error. The declaration
+#      below resolves it.
+#   2. LLM omits solution_free() entirely -> linker error. The weak default
+#      provides a no-op; if the LLM also defines one, the strong definition wins.
+_SOLUTION_PREFIX = """\
+// ── auto-injected by framework/compile.py ──
+// Forward-declare solution_free so LLM code that calls it before defining it
+// (e.g. inside solution_init) still compiles. The actual weak no-op default
+// lives in task_io.cu so it is linked in both solution-writes-it and
+// solution-omits-it cases.
+#ifdef __cplusplus
+extern "C" {
+#endif
+#ifndef ORBENCH_SOLUTION_FREE_DECLARED
+#define ORBENCH_SOLUTION_FREE_DECLARED
+void solution_free(void);
+#endif
+#ifdef __cplusplus
+}
+#endif
+// ── end auto-injected prefix ──
+
+"""
+
+
 def compile_solution(
     task_id: str,
     solution_path: str,
@@ -47,17 +75,22 @@ def compile_solution(
         config = get_config()
         arch = config.gpu.arch
 
+    # Read original solution, prepend auto-fix prefix (idempotent via header guard)
+    with open(solution_path, "r") as f:
+        orig_src = f.read()
+    patched_src = orig_src if "ORBENCH_SOLUTION_FREE_DECLARED" in orig_src else _SOLUTION_PREFIX + orig_src
+
     if build_dir is None:
-        # Use content hash for cache key
-        with open(solution_path, "r") as f:
-            content_hash = str(abs(hash(f.read())))[:12]
+        # Hash the patched source so auto-fix changes invalidate the cache.
+        content_hash = str(abs(hash(patched_src)))[:12]
         build_dir = os.path.join(ORBENCH_ROOT, "cache", task_id, content_hash)
 
     os.makedirs(build_dir, exist_ok=True)
 
-    # Copy solution to build directory
+    # Write the patched solution into the build directory
     src_in_build = os.path.join(build_dir, "solution.cu")
-    shutil.copy2(solution_path, src_in_build)
+    with open(src_in_build, "w") as f:
+        f.write(patched_src)
 
     exe_path = os.path.join(build_dir, "solution_gpu")
 
@@ -68,6 +101,9 @@ def compile_solution(
     cmd = [
         "nvcc", "-O2", f"-arch={arch}",
         "-I", include_dir,
+        # Downgrade common "unused variable" / "set but never used" warnings
+        # that occasionally get promoted to errors by downstream flags.
+        "-diag-suppress=177", "-diag-suppress=550",
         harness_path,
         task_io_path,
         src_in_build,

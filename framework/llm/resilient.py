@@ -18,6 +18,10 @@ from .base import BaseLLMClient, LLMResponse
 def classify_error(e: Exception) -> str:
     """Classify an API error into a category."""
     msg = str(e).lower()
+    if "empty_response" in msg or "content is none" in msg or "no choices" in msg:
+        return "empty_response"
+    if "jsondecodeerror" in msg or "expecting value" in msg:
+        return "empty_response"
     if "rate" in msg or "429" in msg:
         return "rate_limit"
     if "timeout" in msg or "timed out" in msg:
@@ -26,14 +30,14 @@ def classify_error(e: Exception) -> str:
         return "auth"
     if "404" in msg or "not_found" in msg or "not found" in msg:
         return "not_found"
-    if "500" in msg or "502" in msg or "503" in msg:
+    if "500" in msg or "502" in msg or "503" in msg or "502 bad gateway" in msg:
         return "server"
     return "unknown"
 
 
 def is_retryable(error_type: str) -> bool:
     """Decide whether an error category is worth retrying."""
-    return error_type in ("rate_limit", "timeout", "server")
+    return error_type in ("rate_limit", "timeout", "server", "empty_response")
 
 
 # ── Rate limiter ─────────────────────────────────────────────
