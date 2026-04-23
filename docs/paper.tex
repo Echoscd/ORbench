@@ -1,0 +1,842 @@
+% NeurIPS 2024 submission template.
+% Download neurips_2024.sty from: https://neurips.cc/Conferences/2024/PaperInformation/StyleFiles
+% Place neurips_2024.sty in the same directory as this file.
+
+\documentclass{article}
+
+% Use \usepackage[preprint]{neurips_2024}  for a preprint (non-anonymous)
+% Use \usepackage[final]{neurips_2024}     for a camera-ready / accepted paper
+% Use \usepackage{neurips_2024}            for anonymous submission (double-blind)
+\usepackage[preprint]{neurips_2024}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{siunitx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\lstdefinestyle{cuda}{
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{red!70!black},
+  showstringspaces=false,
+  breaklines=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  frame=single,
+  language=C++,
+}
+
+% ══════════════════════════════════════════════════════════════
+\title{ORBench: A Benchmark for Evaluating LLMs on \\
+       CPU-to-CUDA Code Acceleration}
+
+% The \author macro works with any number of authors.
+% Each \And starts a new column.
+\author{%
+  Chen Dong \\
+  \texttt{zijieteam@gmail.com} \\
+  % Affiliation \\
+  % \And
+  % Co-Author \\
+  % Affiliation \\
+}
+
+% ══════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+
+% ── Abstract ────────────────────────────────────────────────
+\begin{abstract}
+We introduce \textsc{ORBench}, a benchmark for evaluating large
+language models (LLMs) on the task of translating sequential CPU
+programs into optimized CUDA kernels. Unlike prior kernel-generation
+benchmarks that focus on isolated GPU primitives, \textsc{ORBench}
+stresses end-to-end acceleration across \textbf{42 production-style
+workloads} spanning scientific computing, graph analytics, financial
+engineering, dynamic programming, and operations research. Each task
+provides a C reference implementation, a three-scale input generator,
+and a deterministic validation oracle. We report results for six
+state-of-the-art models under a zero-hint prompting regime (L3),
+comparing compilation success, numerical correctness, and end-to-end
+speedup over optimized CPU baselines. Our findings reveal that the
+strongest model (Gemini~3.1~Pro) achieves an 88.9\,\% pass rate with a
+median speedup of $316\times$, while the remaining models cluster
+between 47\,\% and 78\,\%. The gap is concentrated in
+\emph{correctness-critical} HPC tasks (sparse linear algebra,
+multigrid, molecular dynamics), suggesting LLMs still struggle with
+fine-grained numerical reasoning under parallel execution.
+\end{abstract}
+
+% ── 1. Introduction ────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+GPU acceleration is now the dominant path to scaling scientific and
+industrial workloads, but authoring efficient CUDA remains the domain
+of specialists. Recent LLMs exhibit impressive code-generation
+capability, raising the question: \emph{can an LLM automate the
+CPU-to-CUDA porting process end-to-end?}
+
+Existing benchmarks answer this question only partially.
+KernelBench~\citep{kernelbench} measures single-kernel generation;
+BabelTower~\citep{babeltower} emphasizes code-level translation
+without correctness oracles. None of them evaluate \emph{realistic
+workloads} with full harnesses, multi-scale inputs, and performance
+comparison against tuned CPU baselines.
+
+\paragraph{Contributions.} This paper makes three contributions:
+\begin{enumerate}
+  \item We release \textsc{ORBench}, a curated suite of
+        \textbf{42 CPU-to-CUDA tasks} across 20+ algorithmic
+        categories, each with a reference implementation, binary
+        I/O harness, validation oracle, and three input scales
+        (\textsc{small}/\textsc{medium}/\textsc{large}).
+  \item We define a three-level prompting protocol (L1: full hints;
+        L2: brief hints; L3: zero hints) that disentangles raw
+        capability from prompt engineering.
+  \item We present the first large-scale evaluation of six leading
+        LLMs (Gemini~3.1~Pro, Claude~Opus~4.6, Qwen~3.6~Plus,
+        Kimi~K2.5, GLM~5.1, DeepSeek~V3.2) under L3, reporting
+        compile rate, pass rate, and end-to-end speedup.
+\end{enumerate}
+
+% ── 2. Related Work ────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{LLM code generation benchmarks.}
+HumanEval~\citep{humaneval} and MBPP~\citep{mbpp} established
+text-to-code evaluation for Python. SWE-bench~\citep{swebench} pushed
+the frontier to repository-level fixes. None target GPU programming.
+
+\paragraph{GPU code benchmarks.}
+KernelBench~\citep{kernelbench} is the closest peer to our work. It
+evaluates single-kernel replacements inside a PyTorch harness and
+reports speedups relative to \texttt{torch.compile}. Our setting is
+distinct in two ways: (i) we evaluate \emph{whole-program} translation
+including I/O, memory management, and multi-kernel orchestration; and
+(ii) our reference is a pinned CPU implementation, giving a fixed
+absolute baseline.
+
+\paragraph{Automatic parallelization and translation.}
+Prior work on source-to-source compilation (\emph{e.g.}, OpenACC,
+Bones~\citep{bones}, Par4All~\citep{par4all}) relies on static analysis
+and pragma hints. LLM-based translators like
+BabelTower~\citep{babeltower} and CodeRosetta~\citep{coderosetta} show
+promise but lack end-to-end execution validation.
+
+% ── 3. Benchmark Design ────────────────────────────────────
+\section{Problem Formulation}
+\label{sec:formulation}
+
+We cast CPU-to-CUDA optimization as a \emph{strategy recommendation}
+problem over a structured algorithm space. This framing lets us study
+LLMs not only as black-box generators, but as policies operating in a
+well-defined decision space, enabling both principled baselines and a
+decomposition of where their advantage comes from.
+
+\subsection{Problem Space $\mathcal{P}$}
+Let $\mathcal{P} = \{Q_1, \ldots, Q_n\}$ be a set of CPU reference
+snippets (one per \textsc{ORBench} task). An \emph{affinity function}
+$\rho : \mathcal{P} \times \mathcal{P} \to \mathbb{R}_{\geq 0}$
+measures structural similarity, making $(\mathcal{P}, \rho)$ a
+weighted graph. In our instantiation, $\rho$ is induced by a kernel
+over static-analysis features (Section~\ref{sec:feature}).
+
+\subsection{Feature Space $\mathcal{F}$}
+\label{sec:feature}
+A feature extractor $f : \mathcal{P} \to \mathcal{F} \subseteq
+\mathbb{R}^d$ maps each problem to a vector $\mathbf{q} = f(Q)$
+capturing loop-nest depth, stride-1 access ratio, arithmetic
+intensity, indirection level, reduction presence, etc. Affinity is
+realized via a kernel:
+\begin{equation}
+\rho(Q_i, Q_j) = \kappa_\mathcal{F}\bigl(f(Q_i), f(Q_j)\bigr).
+\label{eq:affinity}
+\end{equation}
+
+\subsection{Algorithm Space $\mathcal{A}$}
+Let $\mathcal{T} = \{t_1, \ldots, t_m\}$ be a catalog of
+transformation rules (Table~\ref{tab:trans}). Each rule $t_i$ carries
+an intensity level $s_i \in \{0, 1, \ldots, M_i\}$, with $s_i = 0$
+meaning inactive. A \emph{strategy vector} is
+\begin{equation}
+\mathbf{s} = (s_1, \ldots, s_m) \in \mathcal{A}
+   = \prod_{i=1}^{m}\{0, 1, \ldots, M_i\}.
+\label{eq:strategy}
+\end{equation}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Example transformation rules with intensity semantics.}
+\label{tab:trans}
+\begin{tabular}{@{}clll@{}}
+\toprule
+$s_i$ & \textbf{Rule} & \textbf{Intensity semantics} & $M_i$ \\
+\midrule
+$s_1$ & Shared-memory tiling & $0$: off; $\ell$: tile level $\ell$ & 4 \\
+$s_2$ & Coalescing layout     & $0$: none; $1$: row-major; $2$: col-major; $3$: space-filling & 3 \\
+$s_3$ & Loop unroll           & $0$: off; $\ell$: factor $2^{\ell}$ & 5 \\
+$s_4$ & Reduction strategy    & $0$: scalar; $1$: warp shuffle; $2$: shared-tree; $3$: atomic & 3 \\
+$s_5$ & Loop fusion           & $0$: none; $\ell$: fuse $\ell{+}1$ adjacent loops & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Rules interact through prerequisites ($\mathcal{E}_{\mathrm{dep}}$),
+mutual exclusion ($\mathcal{E}_{\mathrm{excl}}$), and
+problem-dependent intensity caps $\bar{M}_i(\mathbf{q})$, yielding the
+feasible set
+\begin{multline}
+\mathcal{A}_0 = \Bigl\{\,
+  \mathbf{s} \in \mathcal{A} \mathrel{\Big|}
+  \bigwedge_{(i,j)\in \mathcal{E}_{\mathrm{dep}}}
+    \bigl(s_j \geq 1 \Rightarrow s_i \geq 1\bigr) \;\land \\
+  \bigwedge_{(i,j)\in \mathcal{E}_{\mathrm{excl}}}
+    \min(s_i, s_j) = 0 \;\land\;
+  \bigwedge_{i=1}^{m} s_i \leq \bar{M}_i(\mathbf{q})
+\,\Bigr\}.
+\label{eq:feasible}
+\end{multline}
+A strategy kernel distinguishes ordered from categorical dimensions:
+\begin{equation}
+\kappa_\mathcal{A}(\mathbf{s},\mathbf{s}')
+  = \exp\!\Biggl(-\sum_{i=1}^{m} w_i \, d_i(s_i, s_i')\Biggr),\;\;
+d_i(s_i, s_i') = \begin{cases}
+|s_i - s_i'|/M_i, & \text{ordered},\\
+\mathbb{1}[s_i \neq s_i'], & \text{categorical}.
+\end{cases}
+\label{eq:skernel}
+\end{equation}
+
+\subsection{Performance Space $\mathcal{Y}$}
+The reward is the achieved end-to-end speedup, clipped to zero on
+failure:
+\begin{equation}
+y(\mathbf{s}, Q) = \frac{T_{\mathrm{CPU}}(Q)}{T_{\mathrm{GPU}}\bigl(\mathrm{Apply}(Q, \mathbf{s})\bigr)},
+\qquad
+y = 0 \text{ if compilation fails or output is incorrect}.
+\label{eq:reward}
+\end{equation}
+
+\subsection{Observation Model}
+Each multi-turn experiment yields a tuple
+$E_l = (Q_{j(l)}, \mathbf{s}_l^A, \mathbf{s}_l^B, r_l)$, where
+$\mathbf{s}^A$ and $\mathbf{s}^B$ are the strategy before and after
+an edit. Define the strategy delta
+$\Delta \mathbf{s}_l = \mathbf{s}_l^B - \mathbf{s}_l^A$.
+We assume a noisy \emph{incremental effect} model:
+\begin{equation}
+r_l = g\bigl(f(Q_{j(l)}),\; \mathbf{s}_l^A,\; \Delta \mathbf{s}_l\bigr)
+      + \epsilon_l, \qquad
+\epsilon_l \sim \mathcal{N}(0, \sigma^2).
+\label{eq:incremental}
+\end{equation}
+The three-argument form of $g$ captures that the marginal effect of a
+change $\Delta\mathbf{s}$ depends on the current baseline
+$\mathbf{s}^A$: \emph{e.g.}, further unroll on top of already-tiled
+code behaves differently than unroll on untiled code.
+
+\subsection{Problem Statement}
+\label{sec:problem}
+\begin{quote}
+\textbf{Problem (Strategy Recommendation).}
+Given the problem space $\mathcal{P}$ with feature extractor $f$,
+the algorithm space $\mathcal{A}$ with feasible subset
+$\mathcal{A}_0$, and a history of experiments
+$\{E_l\}_{l=1}^{k}$, a new query
+$(Q^*, \mathbf{s}^A)$ with feature
+$\mathbf{q}^* = f(Q^*)$ (and $\mathbf{s}^A = \mathbf{0}$ when starting
+from raw CPU), solve
+\begin{equation}
+\mathbf{s}^* = \arg\max_{\mathbf{s} \in \mathcal{A}_0}
+  \hat{g}\bigl(\mathbf{q}^*,\; \mathbf{s}^A,\; \mathbf{s} - \mathbf{s}^A\bigr),
+\label{eq:objective}
+\end{equation}
+where $\hat{g}$ is the effect-function estimator learned from history.
+\end{quote}
+
+This formulation unifies three different views of the problem: (i)~a
+\emph{retrieval} view (pick a strategy that worked on a similar
+problem); (ii)~a \emph{combinatorial-search} view (greedily optimize
+each rule coordinate); and (iii)~a \emph{regression} view (fit
+$\hat{g}$ and maximize). Section~\ref{sec:strategy} contrasts the
+three.
+
+\section{Benchmark Design}
+\label{sec:design}
+
+\subsection{Task Structure}
+
+Each \textsc{ORBench} task is specified by:
+\begin{itemize}
+  \item \texttt{task.json} --- metadata (category, difficulty, input
+        sizes, correctness mode, tolerances);
+  \item \texttt{cpu\_reference.c} --- single-file CPU implementation;
+  \item \texttt{prompt\_template.yaml} --- natural-language task
+        description and optional hints;
+  \item \texttt{task\_io.cu} --- binary I/O adapter shared between CPU
+        and GPU harnesses;
+  \item \texttt{gen\_data.py} --- deterministic input generator.
+\end{itemize}
+
+\subsection{Three-Layer Execution Model}
+
+\begin{figure}[ht]
+\centering
+% \includegraphics[width=0.8\linewidth]{figs/architecture.pdf}
+\caption{Execution pipeline: the shared harness measures end-to-end
+and kernel-only latency, the task I/O module parses binary inputs,
+and the LLM-generated solution performs pure computation.}
+\label{fig:arch}
+\end{figure}
+
+We decouple correctness from performance by separating the
+\textbf{harness} (timing and validation), \textbf{task I/O} (binary
+deserialization), and \textbf{solution} (compute only). Two interface
+modes govern timing:
+\begin{description}
+  \item[\texttt{init\_compute}] Large-memory tasks expose separate
+        \texttt{initialize()} and \texttt{compute()} phases; only
+        \texttt{compute()} is timed.
+  \item[\texttt{compute\_only}] Small tasks where allocation and
+        transfer are part of the measured region.
+\end{description}
+
+\subsection{Correctness Oracle}
+
+Correctness is checked by comparing the solution's \texttt{output.txt}
+against an expected output produced by the CPU reference. Tasks flag
+one of two modes:
+\begin{itemize}
+  \item \textbf{Exact} --- bit-equal string comparison (integer
+        combinatorial tasks).
+  \item \textbf{Numerical} --- element-wise tolerance via
+        \texttt{numpy.isclose} with task-specific $\mathrm{atol}$ and
+        $\mathrm{rtol}$.
+\end{itemize}
+
+\subsection{Prompting Levels}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{The three prompting regimes. Unless stated otherwise, all
+experiments in Section~\ref{sec:results} use L3.}
+\label{tab:levels}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Level} & \textbf{Hints given} & \textbf{Purpose} \\
+\midrule
+L1 & Algorithm background + optimization plan & Measure ceiling with scaffolding \\
+L2 & Brief optimization hints & Measure with minimal guidance \\
+L3 & None (task description only) & Measure autonomous capability \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Task Distribution}
+
+The 42 tasks span the categories listed in Table~\ref{tab:categories}.
+Difficulty is annotated on a four-star scale; harder tasks require
+cross-block synchronization, non-trivial memory hierarchy usage, or
+algorithmic restructuring.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Task distribution across algorithmic categories.}
+\label{tab:categories}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Category} & \textbf{\# Tasks} & \textbf{Example} \\
+\midrule
+Dynamic programming          & 7 & \texttt{network\_rm\_dp}, \texttt{held\_karp\_tsp} \\
+Sparse linear algebra        & 4 & \texttt{hpcg\_spmv\_27pt}, \texttt{npb\_cg\_sparse\_solve} \\
+Financial computing          & 5 & \texttt{monte\_carlo}, \texttt{black\_scholes} \\
+Graph analytics              & 5 & \texttt{gapbs\_pagerank}, \texttt{bellman\_ford} \\
+Fluid simulation (SPH)       & 3 & \texttt{sph\_forces}, \texttt{sph\_cell\_index} \\
+Spatial distance / clustering& 3 & \texttt{dbscan}, \texttt{hausdorff\_distance} \\
+Optimization / LP            & 3 & \texttt{crew\_pairing}, \texttt{pdlp} \\
+Stencil simulation           & 2 & \texttt{hotspot\_2d}, \texttt{miniWeather} \\
+CFD solver                   & 2 & \texttt{npb\_lu\_ssor\_structured} \\
+Other (bioinformatics, stochastic, automata, \ldots) & 8 & \\
+\midrule
+\textbf{Total}               & \textbf{42} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── 4. Evaluation Methodology ──────────────────────────────
+\section{Evaluation Methodology}
+\label{sec:eval}
+
+\subsection{Pipeline}
+
+For each \((\text{model}, \text{task}, \text{sample})\) tuple:
+\begin{enumerate}
+  \item \textbf{Generate.} Call the model with the L3 prompt. Extract
+        CUDA code from the response via markdown parsing.
+  \item \textbf{Compile.} Invoke \texttt{nvcc -O2 -arch=sm\_89} over
+        \texttt{harness\_gpu.cu + task\_io.cu + solution.cu}.
+  \item \textbf{Execute.} Run with \texttt{--validate}, producing
+        \texttt{output.txt} and \texttt{timing.json} in a single call.
+  \item \textbf{Validate.} Compare \texttt{output.txt} against the
+        precomputed expected output.
+  \item \textbf{Benchmark.} Extract mean, std, min, max of CUDA Event
+        timings. Report end-to-end and kernel-only speedups relative
+        to the pinned CPU baseline.
+\end{enumerate}
+
+\subsection{Metrics}
+
+\begin{itemize}
+  \item \textbf{Compile rate} --- fraction of samples that compile.
+  \item \textbf{Pass rate} --- fraction that compile \emph{and}
+        produce correct output.
+  \item \textbf{Speedup} --- $T_{\text{CPU}} / T_{\text{GPU}}$,
+        reported as median (to discount outliers) and best-of-$k$.
+  \item \textbf{$\mathrm{fast}_p$} --- fraction of samples with
+        speedup $\geq p\times$, reported for $p \in \{1, 5, 10\}$.
+\end{itemize}
+
+\subsection{Setup}
+
+All experiments run on a single NVIDIA L40S (\texttt{sm\_89}) with
+CUDA~12.4 and GCC~11. CPU baselines use a single thread pinned to
+core~0 with AVX-512 enabled. Each model generates one sample per
+task at L3 with temperature~0.7. The evaluation pipeline is
+multi-process with one GPU per worker.
+
+% ── 5. Experiments ─────────────────────────────────────────
+\section{Experiments}
+\label{sec:results}
+
+\subsection{Overall Results}
+
+Table~\ref{tab:overall} summarizes the six models on L3.
+Gemini~3.1~Pro leads in pass rate (88.9\,\%) and
+$\mathrm{fast}_{10}$~(86.7\,\%).
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Overall results on \textsc{ORBench}-42 (L3, single sample).
+``Sp.'' denotes end-to-end speedup over the CPU baseline.}
+\label{tab:overall}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+\textbf{Model} & \textbf{Compile} & \textbf{Pass} &
+\textbf{Median Sp.} & \textbf{$\mathrm{fast}_1$} &
+\textbf{$\mathrm{fast}_5$} & \textbf{$\mathrm{fast}_{10}$} \\
+\midrule
+Gemini 3.1 Pro     & 93.3\% & \textbf{88.9\%} & \textbf{316$\times$} & \textbf{91.1\%} & \textbf{88.9\%} & \textbf{86.7\%} \\
+Claude Opus 4.6    & \textbf{95.6\%} & 77.8\% & 213$\times$ & 88.9\% & 80.0\% & 80.0\% \\
+Qwen 3.6 Plus      & 88.9\% & 64.4\% & 259$\times$ & 80.0\% & 73.3\% & 73.3\% \\
+Kimi K2.5          & 78.9\% & 60.5\% & 261$\times$ & 71.1\% & 68.4\% & 68.4\% \\
+GLM 5.1            & 82.8\% & 62.1\% & 228$\times$ & 65.5\% & 58.6\% & 58.6\% \\
+DeepSeek V3.2      & 55.0\% & 47.5\% & 226$\times$ & 52.5\% & 47.5\% & 45.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Per-Category Analysis}
+
+\emph{(Figure/plots to be added.)} Gemini dominates dynamic
+programming and graph analytics; Claude leads in bioinformatics and
+edge cases of sparse linear algebra; Qwen and Kimi are competitive on
+embarrassingly-parallel workloads (Monte~Carlo, stencil).
+
+\subsection{Failure Modes}
+
+We classify failures into three buckets:
+\begin{itemize}
+  \item \textbf{Compile fail.} Missing CUDA include, incorrect kernel
+        signature, or invalid template instantiation.
+  \item \textbf{Wrong result.} Compiled and ran, but output mismatched
+        the oracle --- usually race conditions, bad reductions, or
+        boundary errors.
+  \item \textbf{Correct but slow.} $<1\times$ speedup --- typically
+        excessive synchronization or launch overhead on tiny inputs.
+\end{itemize}
+
+% ── 6. Discussion ──────────────────────────────────────────
+\section{Strategy Recommendation: Three Baselines}
+\label{sec:strategy}
+
+Using the formulation of Section~\ref{sec:formulation}, we benchmark
+three baselines of increasing complexity. All three share the same
+feature extractor $f$ and feasible set $\mathcal{A}_0$; they differ
+only in how they estimate the effect function $\hat{g}$ in
+Equation~\eqref{eq:objective}.
+
+\subsection{Baseline 1: Nearest-Neighbor Transfer}
+\label{sec:bl1}
+Retrieve the most similar problem in the history and reuse its
+best-observed strategy:
+\begin{equation}
+j^* = \arg\min_{j}\;\bigl\lVert f(Q^*) - f(Q_j)\bigr\rVert_2,
+\qquad
+\mathbf{s}^* = \arg\max_{\substack{\mathbf{s}:\;\exists\,l \text{ s.t. } j(l)=j^*,\; \mathbf{s}_l^B = \mathbf{s}}} r_l.
+\label{eq:nn}
+\end{equation}
+We also report the $k$-NN variant with distance-weighted voting. This
+baseline learns no model; it relies purely on the locality assumption
+in feature space.
+
+\subsection{Baseline 2: Greedy Coordinate Search}
+\label{sec:bl2}
+Starting from $\mathbf{s} = \mathbf{s}^A$, sweep one dimension at a
+time. In round $i$, hold all other coordinates fixed and choose the
+intensity that maximizes observed speedup:
+\begin{equation}
+s_i^* = \arg\max_{s_i \in \{0,\ldots,M_i\}}\,
+  y\bigl(\mathbf{s}[s_i \!\to\! s_i],\; Q^*\bigr),
+  \qquad i = 1, \ldots, m.
+\label{eq:greedy}
+\end{equation}
+Total evaluations scale as $\sum_{i=1}^{m}(M_i + 1)$, compared to the
+exhaustive $\prod_i(M_i+1)$. Greedy search ignores cross-dimension
+interactions but costs only linear evaluations.
+
+\subsection{Baseline 3: Linear Regression}
+\label{sec:bl3}
+Fit the effect function as a linear model in features and strategy:
+\begin{equation}
+\hat{g}(\mathbf{q}, \mathbf{s}^A, \Delta\mathbf{s})
+  = \mathbf{w}_q^{\top}\mathbf{q}
+  + \mathbf{w}_s^{\top}\mathbf{s}^A
+  + \mathbf{w}_\Delta^{\top}\Delta\mathbf{s} + b,
+\label{eq:linreg}
+\end{equation}
+learned by least squares on $\{(\mathbf{x}_l, r_l)\}_{l=1}^{k}$.
+Substituting into Equation~\eqref{eq:objective} gives a separable
+optimum per coordinate (or an integer-linear program when
+$\mathcal{A}_0$ is binding). Linear regression cannot capture
+interactions but provides an interpretable, principled lower bound.
+
+\subsection{Experimental Protocol}
+
+\paragraph{Data split.} We hold out $20\%$ of $\mathcal{P}$ as
+unseen queries (``test tasks'') and train all three baselines on the
+remaining $80\%$, using the multi-turn agent traces as the history
+$\{E_l\}$.
+
+\paragraph{Metrics.}
+\begin{itemize}
+  \item \textbf{Hit@$K$} --- fraction of test queries whose predicted
+  $\mathbf{s}^*$ (top-$K$) matches the best-observed strategy in the
+  held-out trace.
+  \item \textbf{Speedup gap} --- $\Delta = y(\mathbf{s}^{\mathrm{oracle}})
+  - y(\mathbf{s}^*)$, averaged over test queries.
+  \item \textbf{Evaluation budget} --- number of compile-and-run trials
+  needed to reach within $10\%$ of the oracle speedup.
+\end{itemize}
+
+\subsection{Results}
+\label{sec:strategy-results}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Method} & \textbf{Hit@1} & \textbf{Avg.\ speedup gap} & \textbf{\# trials to 0.9$\times$oracle} \\
+\midrule
+Baseline 1: 1-NN Transfer       & --- & --- & --- \\
+Baseline 1$^\prime$: 5-NN Voting & --- & --- & --- \\
+Baseline 2: Greedy Coordinate    & --- & --- & --- \\
+Baseline 3: Linear Regression    & --- & --- & --- \\
+\midrule
+LLM (Gemini 3.1 Pro, L3)          & --- & --- & --- \\
+LLM + history (retrieval-augmented) & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\caption{Strategy-recommendation baselines on \textsc{ORBench}-42.
+\emph{(Results to be filled.)} $\mathbf{s}^A = \mathbf{0}$ (raw CPU);
+history is drawn from the multi-turn traces.}
+\label{tab:strategy}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+% \includegraphics[width=0.7\textwidth]{figs/strategy_budget.pdf}
+\caption{\emph{(To be filled.)} Speedup attained versus compile-and-run
+budget for the three baselines and the LLM. Expected trend: Baseline~1
+saturates early at its retrieval ceiling; Baseline~2 improves
+monotonically but plateaus before the oracle; Baseline~3 is
+competitive at very low budgets but asymptotes below the
+interaction-aware methods.}
+\label{fig:strategy-budget}
+\end{figure}
+
+\paragraph{What we expect.}
+We anticipate: (i)~NN-transfer will dominate on tasks with close
+neighbors in $\mathcal{F}$ (graph analytics, dense linear algebra),
+but collapse on rare categories (regex, combinatorial optimization);
+(ii)~greedy coordinate search will outperform NN-transfer given a
+modest budget, but miss interactions such as tiling$\times$unroll;
+(iii)~linear regression will be the weakest on raw speedup but most
+sample-efficient; (iv)~strong LLMs will roughly match or exceed the
+classical baselines on tasks close to pretraining data, and fall
+sharply on bespoke categories.
+
+\section{Strategy Transfer: Discovery vs.\ Implementation}
+\label{sec:transfer}
+
+The L3 results in Section~\ref{sec:results} conflate two skills:
+\emph{knowing what to optimize} (strategy discovery) and
+\emph{knowing how to code it} (implementation). A model could
+underperform because it cannot identify useful patterns, or because
+it identifies them but writes buggy/slow CUDA. We design a two-stage
+ablation to tell these apart.
+
+\paragraph{Stage~1 (baseline, from Section~\ref{sec:results}).}
+Each model generates a solution under L3. Let $M^{*}(Q)$ denote the
+best model on task $Q$ (highest correct speedup).
+
+\paragraph{Stage~2 (strategy transfer).}
+For each non-winning model $M$ on task $Q$, we take $M^{*}(Q)$'s
+solution, extract its optimization strategy as a natural-language
+recipe (ordered list of patterns + rationale), and re-prompt $M$ with
+this recipe appended to the L3 prompt. $M$ must then produce its own
+implementation guided by the recipe, without seeing $M^{*}$'s code.
+
+\paragraph{Diagnosis.} Let $y^{\mathrm{S1}}_{M}$ and
+$y^{\mathrm{S2}}_{M}$ be the speedups in Stage~1 and Stage~2. Define
+the \emph{replication ratio}
+\begin{equation}
+\mathrm{RR}(M, Q) = \frac{y^{\mathrm{S2}}_{M}(Q)}{y(M^*)(Q)}
+  \in [0, 1].
+\label{eq:rr}
+\end{equation}
+We read the outcome per task:
+\begin{itemize}
+  \item $\mathrm{RR} \geq \tau$ (close to~1): the Stage~1 gap was
+        \textbf{strategy discovery} --- given the recipe, $M$ can
+        execute.
+  \item $\mathrm{RR} < \tau$ (small): the gap is \textbf{implementation
+        skill} --- even told what to do, $M$ cannot write the code.
+\end{itemize}
+We use $\tau = 0.7$ (within $30\%$ of the leader) as the default.
+
+\paragraph{Why this matters.}
+The two diagnoses call for different remedies. A discovery gap points
+to retrieval augmentation (Section~\ref{sec:strategy}) or agentic
+reasoning. An implementation gap is harder: it points to limitations
+in the base model's CUDA fluency, which supervised fine-tuning or
+longer context with canonical examples may fix.
+
+\paragraph{Experimental protocol.}
+\begin{enumerate}
+  \item Select the $T$ tasks where Gemini~3.1~Pro (the Stage~1
+        leader) achieves $\geq 10\times$ speedup and no other model
+        is within $2\times$. ($T \approx 15$ in our current data.)
+  \item For each competitor $M \in \{$Claude, Qwen, Kimi, GLM,
+        DeepSeek$\}$, run the transfer protocol.
+  \item Report per-model, per-task RR and the fraction of tasks
+        classified as \emph{discovery} vs.\ \emph{implementation}.
+\end{enumerate}
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Competitor} & \textbf{\# tasks} & \textbf{Mean RR} & \textbf{Discovery\%} & \textbf{Impl.\%} \\
+\midrule
+Claude Opus 4.6 & --- & --- & --- & --- \\
+Qwen 3.6 Plus    & --- & --- & --- & --- \\
+Kimi K2.5        & --- & --- & --- & --- \\
+GLM 5.1          & --- & --- & --- & --- \\
+DeepSeek V3.2    & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\caption{Strategy-transfer diagnosis per competitor model.
+\emph{(Results to be filled.)} For each model we report the mean
+replication ratio $\mathrm{RR}$, the fraction of tasks with
+$\mathrm{RR} \geq 0.7$ (``discovery gap''), and the fraction with
+$\mathrm{RR} < 0.7$ (``implementation gap'').}
+\label{tab:transfer}
+\end{table}
+
+\begin{figure}[ht]
+\centering
+% \includegraphics[width=0.55\textwidth]{figs/transfer_diagnosis.pdf}
+\caption{\emph{(To be filled.)} Scatter of $y^{\mathrm{S1}}$ (x-axis)
+vs.\ $y^{\mathrm{S2}}$ (y-axis) per task. Points on the
+$y = y^{\mathrm{S2}}_{\mathrm{leader}}$ line indicate a fully-closed
+discovery gap; points clustered near the $y = y^{\mathrm{S1}}$ line
+indicate a stubborn implementation gap.}
+\label{fig:transfer}
+\end{figure}
+
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Where LLMs excel.} Models consistently produce strong
+CUDA code for \emph{massively parallel, regular} workloads such as
+Monte~Carlo simulation and dense element-wise kernels, often exceeding
+$1000\times$ speedup.
+
+\paragraph{Where they fail.} Tasks requiring \emph{irregular memory
+access patterns} (sparse solvers, graph irregularity) or
+\emph{cross-iteration dependencies} (multigrid V-cycles, Gauss-Seidel
+sweeps) remain fragile. Three tasks (\texttt{nbnxm\_forces},
+\texttt{npb\_mg\_vcycle}, \texttt{rodinia\_nw\_alignment}) were failed
+by \emph{all} six models.
+
+\paragraph{Infrastructure matters.} Routing through OpenRouter for
+Chinese models introduces significant instability: in our runs,
+$\sim 18\,\%$ of GLM requests returned empty responses. We added
+empty-response retries and throughput-based routing to \emph{partially}
+mitigate.
+
+% ── 7. Limitations ─────────────────────────────────────────
+\section{Limitations}
+\label{sec:limitations}
+
+\begin{itemize}
+  \item \textbf{Single sample per task.} We report one generation per
+        $(\text{model},\text{task})$ pair; $k$-sample studies would
+        tighten pass-rate confidence intervals.
+  \item \textbf{Single GPU architecture.} All measurements on
+        \texttt{sm\_89}; generalization to H100 / A100 / consumer
+        cards is unstudied.
+  \item \textbf{L3 only.} We have not yet scaled the L1/L2 evaluation
+        across all models.
+\end{itemize}
+
+% ── 8. Conclusion ──────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+
+\textsc{ORBench} provides a rigorous, reproducible platform for
+evaluating LLM-generated GPU code on realistic workloads. Our first
+large-scale study shows a clear capability gap between frontier
+closed-source models and open-weight alternatives, concentrated in
+correctness on irregular HPC kernels. We release the benchmark, the
+harness, and the evaluation scripts to support community benchmarking.
+
+% ── Broader Impact (required by NeurIPS) ───────────────────
+\section*{Broader Impact}
+
+\textsc{ORBench} aims to make LLM-assisted GPU programming more
+rigorous and reproducible. Positive impact: lowering the barrier to
+entry for GPU acceleration in scientific computing; enabling fair
+cross-model evaluation; surfacing specific failure modes that model
+developers can target. Potential concerns: benchmark saturation
+incentivizing overfitting to these tasks; uneven access to
+infrastructure (single-GPU evaluation may advantage models that
+produce simpler kernels). We release all task definitions, harnesses,
+and evaluation logs to enable independent verification.
+
+% ── Acknowledgments ────────────────────────────────────────
+\begin{ack}
+We thank \emph{(TBD)}.
+\end{ack}
+
+% ── References (using natbib-style \citep) ─────────────────
+\begin{thebibliography}{9}
+
+\bibitem[Ouyang et al.(2025)]{kernelbench}
+A.~Ouyang, S.~Guo, S.~Arora, A.~Zhang, M.~Hu, C.~R\'e, and
+A.~Mirhoseini.
+\newblock KernelBench: Can LLMs write efficient GPU kernels?
+\newblock \emph{arXiv preprint arXiv:2502.10517}, 2025.
+
+\bibitem[Chen et al.(2021)]{humaneval}
+M.~Chen et al.
+\newblock Evaluating large language models trained on code.
+\newblock \emph{arXiv preprint arXiv:2107.03374}, 2021.
+
+\bibitem[Austin et al.(2021)]{mbpp}
+J.~Austin et al.
+\newblock Program synthesis with large language models.
+\newblock \emph{arXiv preprint arXiv:2108.07732}, 2021.
+
+\bibitem[Jimenez et al.(2024)]{swebench}
+C.~E. Jimenez et al.
+\newblock SWE-bench: Can language models resolve real-world GitHub
+issues?
+\newblock In \emph{ICLR}, 2024.
+
+\bibitem[Wen et al.(2022)]{babeltower}
+Y.~Wen et al.
+\newblock BabelTower: Learning to auto-parallelized program
+translation.
+\newblock In \emph{ICML}, 2022.
+
+\bibitem[Tehranijamsaz et al.(2024)]{coderosetta}
+A.~Tehranijamsaz et al.
+\newblock CodeRosetta: Pushing the boundaries of unsupervised code
+translation for parallel programming.
+\newblock In \emph{NeurIPS}, 2024.
+
+\bibitem[Nugteren and Corporaal(2014)]{bones}
+C.~Nugteren and H.~Corporaal.
+\newblock Bones: An automatic skeleton-based C-to-CUDA compiler for
+GPUs.
+\newblock \emph{ACM TACO}, 11(4), 2014.
+
+\bibitem[Amini et al.(2012)]{par4all}
+M.~Amini et al.
+\newblock Par4All: From convex array regions to heterogeneous
+computing.
+\newblock In \emph{IMPACT}, 2012.
+
+\end{thebibliography}
+
+\appendix
+
+% ── Appendix A. Task List ──────────────────────────────────
+\section{Complete Task List}
+\label{app:tasklist}
+
+\emph{(42 tasks with category, difficulty, and brief description.
+Auto-generate from \texttt{tasks/*/task.json}.)}
+
+% ── Appendix B. Prompt Templates ───────────────────────────
+\section{Example Prompt (L3)}
+\label{app:prompt}
+
+\begin{lstlisting}[style=cuda,caption={Canonical L3 prompt structure.}]
+# Task: <name>
+
+<task description>
+
+## Interface
+<C function signatures>
+
+## Input sizes
+<auto-generated size table>
+
+## Output contract
+<expected output format>
+
+## CPU Reference
+<cpu_reference.c content>
+
+Please produce a single self-contained CUDA file that implements
+<function names>. Your code will be compiled and linked against
+the provided harness.
+\end{lstlisting}
+
+\end{document}
