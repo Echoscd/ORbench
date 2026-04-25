@@ -135,36 +135,69 @@ static float* d_primal_avg = nullptr;
 static float* d_x_bar = nullptr;
 static float* d_Ax_bar = nullptr;
 
-extern "C" void solution_init(int          num_vars,
-                              int          num_constraints,
-                              int          nnz,
-                              int          num_iters,
-                              const float* obj,
-                              const float* var_lb,
-                              const float* var_ub,
-                              const float* con_lb,
-                              const float* con_ub,
-                              const int*   col_ptrs,
-                              const int*   row_indices,
-                              const float* values,
-                              float        step_size,
-                              float        primal_weight)
+static int g_nnz = 0;
+
+extern "C" void solution_free(void)
 {
-    g_num_vars        = num_vars;
-    g_num_constraints = num_constraints;
+    if (d_obj)          { cudaFree(d_obj);          d_obj = nullptr; }
+    if (d_var_lb)       { cudaFree(d_var_lb);       d_var_lb = nullptr; }
+    if (d_var_ub)       { cudaFree(d_var_ub);       d_var_ub = nullptr; }
+    if (d_con_lb)       { cudaFree(d_con_lb);       d_con_lb = nullptr; }
+    if (d_con_ub)       { cudaFree(d_con_ub);       d_con_ub = nullptr; }
+    if (d_col_ptrs)     { cudaFree(d_col_ptrs);     d_col_ptrs = nullptr; }
+    if (d_row_indices)  { cudaFree(d_row_indices);  d_row_indices = nullptr; }
+    if (d_values)       { cudaFree(d_values);       d_values = nullptr; }
+    if (d_primal)       { cudaFree(d_primal);       d_primal = nullptr; }
+    if (d_dual)         { cudaFree(d_dual);         d_dual = nullptr; }
+    if (d_dual_product) { cudaFree(d_dual_product); d_dual_product = nullptr; }
+    if (d_primal_avg)   { cudaFree(d_primal_avg);   d_primal_avg = nullptr; }
+    if (d_x_bar)        { cudaFree(d_x_bar);        d_x_bar = nullptr; }
+    if (d_Ax_bar)       { cudaFree(d_Ax_bar);       d_Ax_bar = nullptr; }
+    g_num_vars = 0;
+    g_num_constraints = 0;
+    g_nnz = 0;
+}
+
+extern "C" void solution_compute(int          num_vars,
+                                 int          num_constraints,
+                                 int          nnz,
+                                 int          num_iters,
+                                 const float* obj,
+                                 const float* var_lb,
+                                 const float* var_ub,
+                                 const float* con_lb,
+                                 const float* con_ub,
+                                 const int*   col_ptrs,
+                                 const int*   row_indices,
+                                 const float* values,
+                                 float        step_size,
+                                 float        primal_weight,
+                                 float*       primal_out)
+{
     g_num_iters       = num_iters;
     g_step_size       = step_size;
     g_primal_weight   = primal_weight;
 
-    // Upload LP data
-    cudaMalloc(&d_obj,         num_vars * sizeof(float));
-    cudaMalloc(&d_var_lb,      num_vars * sizeof(float));
-    cudaMalloc(&d_var_ub,      num_vars * sizeof(float));
-    cudaMalloc(&d_con_lb,      num_constraints * sizeof(float));
-    cudaMalloc(&d_con_ub,      num_constraints * sizeof(float));
-    cudaMalloc(&d_col_ptrs,    (num_vars + 1) * sizeof(int));
-    cudaMalloc(&d_row_indices, nnz * sizeof(int));
-    cudaMalloc(&d_values,      nnz * sizeof(float));
+    if (g_num_vars != num_vars || g_num_constraints != num_constraints || g_nnz != nnz) {
+        solution_free();
+        cudaMalloc(&d_obj,         num_vars * sizeof(float));
+        cudaMalloc(&d_var_lb,      num_vars * sizeof(float));
+        cudaMalloc(&d_var_ub,      num_vars * sizeof(float));
+        cudaMalloc(&d_con_lb,      num_constraints * sizeof(float));
+        cudaMalloc(&d_con_ub,      num_constraints * sizeof(float));
+        cudaMalloc(&d_col_ptrs,    (num_vars + 1) * sizeof(int));
+        cudaMalloc(&d_row_indices, nnz * sizeof(int));
+        cudaMalloc(&d_values,      nnz * sizeof(float));
+        cudaMalloc(&d_primal,       num_vars * sizeof(float));
+        cudaMalloc(&d_dual,         num_constraints * sizeof(float));
+        cudaMalloc(&d_dual_product, num_vars * sizeof(float));
+        cudaMalloc(&d_primal_avg,   num_vars * sizeof(float));
+        cudaMalloc(&d_x_bar,        num_vars * sizeof(float));
+        cudaMalloc(&d_Ax_bar,       num_constraints * sizeof(float));
+        g_num_vars = num_vars;
+        g_num_constraints = num_constraints;
+        g_nnz = nnz;
+    }
 
     cudaMemcpy(d_obj,         obj,         num_vars * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_var_lb,      var_lb,      num_vars * sizeof(float), cudaMemcpyHostToDevice);
@@ -175,18 +208,6 @@ extern "C" void solution_init(int          num_vars,
     cudaMemcpy(d_row_indices, row_indices, nnz * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_values,      values,      nnz * sizeof(float), cudaMemcpyHostToDevice);
 
-    // Allocate working buffers
-    cudaMalloc(&d_primal,       num_vars * sizeof(float));
-    cudaMalloc(&d_dual,         num_constraints * sizeof(float));
-    cudaMalloc(&d_dual_product, num_vars * sizeof(float));
-    cudaMalloc(&d_primal_avg,   num_vars * sizeof(float));
-    cudaMalloc(&d_x_bar,        num_vars * sizeof(float));
-    cudaMalloc(&d_Ax_bar,       num_constraints * sizeof(float));
-}
-
-extern "C" void solution_compute(int num_vars, int num_constraints,
-                                 float* primal_out)
-{
     int bv = 256;
     int gv = (num_vars + bv - 1) / bv;
     int gc = (num_constraints + bv - 1) / bv;
@@ -198,10 +219,10 @@ extern "C" void solution_compute(int num_vars, int num_constraints,
     cudaMemset(d_primal_avg,   0, num_vars * sizeof(float));
 
     float avg_weight_sum = 0.0f;
-    float primal_step_size = g_step_size / g_primal_weight;
-    float dual_step_size   = g_step_size * g_primal_weight;
+    float primal_step_size = step_size / primal_weight;
+    float dual_step_size   = step_size * primal_weight;
 
-    for (int iter = 0; iter < g_num_iters; iter++) {
+    for (int iter = 0; iter < num_iters; iter++) {
         // 1. Primal update + extrapolation
         kernel_primal_update<<<gv, bv>>>(num_vars, primal_step_size,
             d_obj, d_dual_product, d_var_lb, d_var_ub, d_primal, d_x_bar);
@@ -220,29 +241,12 @@ extern "C" void solution_compute(int num_vars, int num_constraints,
                                     d_values, d_dual, d_dual_product);
 
         // 5. Weighted average update
-        float ratio = g_step_size / (avg_weight_sum + g_step_size);
+        float ratio = step_size / (avg_weight_sum + step_size);
         kernel_avg_update<<<gv, bv>>>(num_vars, ratio, d_primal, d_primal_avg);
-        avg_weight_sum += g_step_size;
+        avg_weight_sum += step_size;
     }
 
     cudaMemcpy(primal_out, d_primal_avg, num_vars * sizeof(float),
                cudaMemcpyDeviceToHost);
-}
-
-extern "C" void solution_free(void)
-{
-    cudaFree(d_obj);         d_obj = nullptr;
-    cudaFree(d_var_lb);      d_var_lb = nullptr;
-    cudaFree(d_var_ub);      d_var_ub = nullptr;
-    cudaFree(d_con_lb);      d_con_lb = nullptr;
-    cudaFree(d_con_ub);      d_con_ub = nullptr;
-    cudaFree(d_col_ptrs);    d_col_ptrs = nullptr;
-    cudaFree(d_row_indices); d_row_indices = nullptr;
-    cudaFree(d_values);      d_values = nullptr;
-    cudaFree(d_primal);      d_primal = nullptr;
-    cudaFree(d_dual);        d_dual = nullptr;
-    cudaFree(d_dual_product); d_dual_product = nullptr;
-    cudaFree(d_primal_avg);  d_primal_avg = nullptr;
-    cudaFree(d_x_bar);       d_x_bar = nullptr;
-    cudaFree(d_Ax_bar);      d_Ax_bar = nullptr;
+    cudaDeviceSynchronize();
 }

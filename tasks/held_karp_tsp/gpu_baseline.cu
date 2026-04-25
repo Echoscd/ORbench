@@ -82,15 +82,16 @@ __global__ void held_karp_final(int n, int full_mask,
 
 // ===== Host interface =====
 
-static int    g_B = 0;
 static int    g_n = 0;
 static int*   d_cost = nullptr;
 static int*   d_dp = nullptr;
 static int*   d_result = nullptr;
 
-extern "C" void solution_init(int B, int n, const int* costs) {
-    // Not used — we upload per-instance in solution_compute
-    (void)B; (void)n; (void)costs;
+extern "C" void solution_free(void) {
+    if (d_cost)   { cudaFree(d_cost);   d_cost   = nullptr; }
+    if (d_dp)     { cudaFree(d_dp);     d_dp     = nullptr; }
+    if (d_result) { cudaFree(d_result); d_result = nullptr; }
+    g_n = 0;
 }
 
 extern "C" void solution_compute(int B, int n, const int* costs,
@@ -101,9 +102,13 @@ extern "C" void solution_compute(int B, int n, const int* costs,
     size_t dp_bytes = (size_t)subset_count * n * sizeof(int);
     size_t cost_bytes = (size_t)n * n * sizeof(int);
 
-    cudaMalloc(&d_cost, cost_bytes);
-    cudaMalloc(&d_dp, dp_bytes);
-    cudaMalloc(&d_result, sizeof(int));
+    if (g_n != n) {
+        solution_free();
+        cudaMalloc(&d_cost, cost_bytes);
+        cudaMalloc(&d_dp, dp_bytes);
+        cudaMalloc(&d_result, sizeof(int));
+        g_n = n;
+    }
 
     int block = 256;
 
@@ -136,9 +141,5 @@ extern "C" void solution_compute(int B, int n, const int* costs,
                    cudaMemcpyDeviceToHost);
     }
 
-    cudaFree(d_cost);   d_cost = nullptr;
-    cudaFree(d_dp);     d_dp = nullptr;
-    cudaFree(d_result); d_result = nullptr;
+    cudaDeviceSynchronize();
 }
-
-extern "C" void solution_free(void) {}

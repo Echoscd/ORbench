@@ -203,11 +203,17 @@ static float   g_dt = 0.0f;
 static unsigned int g_baseSeed = 0;
 static monteCarloOptionStruct g_optionStruct;
 
-extern "C" void solution_init(int N, int num_steps, float risk_free, float volatility,
-                               float strike, float spot, float time_to_maturity,
-                               unsigned int base_seed)
+extern "C" void solution_free(void)
 {
-    g_N = N;
+    if (d_samplePrices) { cudaFree(d_samplePrices); d_samplePrices = nullptr; }
+    g_N = 0;
+}
+
+extern "C" void solution_compute(int N, int num_steps, float risk_free, float volatility,
+                                  float strike, float spot, float time_to_maturity,
+                                  unsigned int base_seed,
+                                  float* samplePrices)
+{
     g_seqLen = num_steps;
     g_dt = 1.0f / (float)num_steps;
     g_baseSeed = base_seed;
@@ -219,13 +225,12 @@ extern "C" void solution_init(int N, int num_steps, float risk_free, float volat
     g_optionStruct.strikeVal = strike;
     g_optionStruct.discountVal = expf(-risk_free * time_to_maturity);
 
-    // Allocate GPU output buffer (persistent across calls)
-    if (d_samplePrices) cudaFree(d_samplePrices);
-    cudaMalloc(&d_samplePrices, N * sizeof(float));
-}
+    if (g_N != N) {
+        solution_free();
+        cudaMalloc(&d_samplePrices, N * sizeof(float));
+        g_N = N;
+    }
 
-extern "C" void solution_compute(int N, float* samplePrices)
-{
     // Launch: one thread per sample
     int threadsPerBlock = 256;
     int numBlocks = (N + threadsPerBlock - 1) / threadsPerBlock;
@@ -236,9 +241,5 @@ extern "C" void solution_compute(int N, float* samplePrices)
 
     // Download results
     cudaMemcpy(samplePrices, d_samplePrices, N * sizeof(float), cudaMemcpyDeviceToHost);
-}
-
-extern "C" void solution_free(void)
-{
-    if (d_samplePrices) { cudaFree(d_samplePrices); d_samplePrices = nullptr; }
+    cudaDeviceSynchronize();
 }

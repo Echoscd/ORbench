@@ -257,7 +257,7 @@ __global__ void getOutValOptionKernel(
     outputVals[optionNum] = resultVal;
 }
 
-// ===== Host interface =====
+// ===== Host interface (compute_only) =====
 
 static int    g_N = 0;
 static int*   d_types   = nullptr;
@@ -269,44 +269,6 @@ static float* d_ts      = nullptr;
 static float* d_vols    = nullptr;
 static float* d_prices  = nullptr;
 
-extern "C" void solution_init(int N,
-                               const int* types, const float* strikes, const float* spots,
-                               const float* qs, const float* rs, const float* ts,
-                               const float* vols)
-{
-    g_N = N;
-    size_t szi = (size_t)N * sizeof(int);
-    size_t szf = (size_t)N * sizeof(float);
-
-    cudaMalloc(&d_types,   szi);
-    cudaMalloc(&d_strikes, szf);
-    cudaMalloc(&d_spots,   szf);
-    cudaMalloc(&d_qs,      szf);
-    cudaMalloc(&d_rs,      szf);
-    cudaMalloc(&d_ts,      szf);
-    cudaMalloc(&d_vols,    szf);
-    cudaMalloc(&d_prices,  szf);
-
-    cudaMemcpy(d_types,   types,   szi, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_strikes, strikes, szf, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_spots,   spots,   szf, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_qs,      qs,      szf, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_rs,      rs,      szf, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_ts,      ts,      szf, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_vols,    vols,    szf, cudaMemcpyHostToDevice);
-}
-
-extern "C" void solution_compute(int N, float* prices)
-{
-    int threadsPerBlock = 256;
-    int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
-
-    getOutValOptionKernel<<<blocks, threadsPerBlock>>>(
-        N, d_types, d_strikes, d_spots, d_qs, d_rs, d_ts, d_vols, d_prices);
-
-    cudaMemcpy(prices, d_prices, (size_t)N * sizeof(float), cudaMemcpyDeviceToHost);
-}
-
 extern "C" void solution_free(void)
 {
     if (d_types)   { cudaFree(d_types);   d_types   = nullptr; }
@@ -317,4 +279,44 @@ extern "C" void solution_free(void)
     if (d_ts)      { cudaFree(d_ts);      d_ts      = nullptr; }
     if (d_vols)    { cudaFree(d_vols);    d_vols    = nullptr; }
     if (d_prices)  { cudaFree(d_prices);  d_prices  = nullptr; }
+    g_N = 0;
+}
+
+extern "C" void solution_compute(int N,
+                                  const int* types, const float* strikes, const float* spots,
+                                  const float* qs, const float* rs, const float* ts,
+                                  const float* vols,
+                                  float* prices)
+{
+    size_t szi = (size_t)N * sizeof(int);
+    size_t szf = (size_t)N * sizeof(float);
+
+    if (g_N != N) {
+        solution_free();
+        cudaMalloc(&d_types,   szi);
+        cudaMalloc(&d_strikes, szf);
+        cudaMalloc(&d_spots,   szf);
+        cudaMalloc(&d_qs,      szf);
+        cudaMalloc(&d_rs,      szf);
+        cudaMalloc(&d_ts,      szf);
+        cudaMalloc(&d_vols,    szf);
+        cudaMalloc(&d_prices,  szf);
+        g_N = N;
+    }
+
+    cudaMemcpy(d_types,   types,   szi, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_strikes, strikes, szf, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_spots,   spots,   szf, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_qs,      qs,      szf, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_rs,      rs,      szf, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_ts,      ts,      szf, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_vols,    vols,    szf, cudaMemcpyHostToDevice);
+
+    int threadsPerBlock = 256;
+    int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+    getOutValOptionKernel<<<blocks, threadsPerBlock>>>(
+        N, d_types, d_strikes, d_spots, d_qs, d_rs, d_ts, d_vols, d_prices);
+
+    cudaMemcpy(prices, d_prices, szf, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
 }

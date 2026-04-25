@@ -70,27 +70,50 @@ __global__ void KerComputeStepPos(int N,
 
 extern "C" {
 
-void solution_init(int N,
-                   const float* posxy_x, const float* posxy_y,
-                   const float* posz,
-                   const float* movxy_x, const float* movxy_y,
-                   const float* movz,
-                   float cell_size)
+void solution_free(void)
 {
-    g_N = N;
-    g_cell_size = cell_size;
+    if (d_pos_x)    { cudaFree(d_pos_x);    d_pos_x    = nullptr; }
+    if (d_pos_y)    { cudaFree(d_pos_y);    d_pos_y    = nullptr; }
+    if (d_pos_z)    { cudaFree(d_pos_z);    d_pos_z    = nullptr; }
+    if (d_mov_x)    { cudaFree(d_mov_x);    d_mov_x    = nullptr; }
+    if (d_mov_y)    { cudaFree(d_mov_y);    d_mov_y    = nullptr; }
+    if (d_mov_z)    { cudaFree(d_mov_z);    d_mov_z    = nullptr; }
+    if (d_out_x)    { cudaFree(d_out_x);    d_out_x    = nullptr; }
+    if (d_out_y)    { cudaFree(d_out_y);    d_out_y    = nullptr; }
+    if (d_out_z)    { cudaFree(d_out_z);    d_out_z    = nullptr; }
+    if (d_out_cell) { cudaFree(d_out_cell); d_out_cell = nullptr; }
+    g_N = 0;
+}
 
+void solution_compute(int N,
+                      const float* posxy_x, const float* posxy_y,
+                      const float* posz,
+                      const float* movxy_x, const float* movxy_y,
+                      const float* movz,
+                      float cell_size,
+                      double* out_x, double* out_y, double* out_z,
+                      int* out_cell)
+{
     size_t sz_f = (size_t)N * sizeof(float);
     size_t sz_d = (size_t)N * sizeof(double);
     size_t sz_i = (size_t)N * sizeof(int);
 
-    // Allocate and copy input arrays to device
-    cudaMalloc(&d_pos_x, sz_f);
-    cudaMalloc(&d_pos_y, sz_f);
-    cudaMalloc(&d_pos_z, sz_f);
-    cudaMalloc(&d_mov_x, sz_f);
-    cudaMalloc(&d_mov_y, sz_f);
-    cudaMalloc(&d_mov_z, sz_f);
+    if (g_N != N) {
+        solution_free();
+        cudaMalloc(&d_pos_x, sz_f);
+        cudaMalloc(&d_pos_y, sz_f);
+        cudaMalloc(&d_pos_z, sz_f);
+        cudaMalloc(&d_mov_x, sz_f);
+        cudaMalloc(&d_mov_y, sz_f);
+        cudaMalloc(&d_mov_z, sz_f);
+        cudaMalloc(&d_out_x, sz_d);
+        cudaMalloc(&d_out_y, sz_d);
+        cudaMalloc(&d_out_z, sz_d);
+        cudaMalloc(&d_out_cell, sz_i);
+        g_N = N;
+    }
+
+    g_cell_size = cell_size;
 
     cudaMemcpy(d_pos_x, posxy_x, sz_f, cudaMemcpyHostToDevice);
     cudaMemcpy(d_pos_y, posxy_y, sz_f, cudaMemcpyHostToDevice);
@@ -99,17 +122,6 @@ void solution_init(int N,
     cudaMemcpy(d_mov_y, movxy_y, sz_f, cudaMemcpyHostToDevice);
     cudaMemcpy(d_mov_z, movz,    sz_f, cudaMemcpyHostToDevice);
 
-    // Allocate output arrays on device
-    cudaMalloc(&d_out_x, sz_d);
-    cudaMalloc(&d_out_y, sz_d);
-    cudaMalloc(&d_out_z, sz_d);
-    cudaMalloc(&d_out_cell, sz_i);
-}
-
-void solution_compute(int N,
-                      double* out_x, double* out_y, double* out_z,
-                      int* out_cell)
-{
     dim3 block(BLOCK_SIZE);
     dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
@@ -117,30 +129,15 @@ void solution_compute(int N,
         N,
         d_pos_x, d_pos_y, d_pos_z,
         d_mov_x, d_mov_y, d_mov_z,
-        g_cell_size,
+        cell_size,
         d_out_x, d_out_y, d_out_z, d_out_cell);
 
     // Copy results back to host
-    size_t sz_d = (size_t)N * sizeof(double);
-    size_t sz_i = (size_t)N * sizeof(int);
     cudaMemcpy(out_x,    d_out_x,    sz_d, cudaMemcpyDeviceToHost);
     cudaMemcpy(out_y,    d_out_y,    sz_d, cudaMemcpyDeviceToHost);
     cudaMemcpy(out_z,    d_out_z,    sz_d, cudaMemcpyDeviceToHost);
     cudaMemcpy(out_cell, d_out_cell, sz_i, cudaMemcpyDeviceToHost);
-}
-
-void solution_free(void)
-{
-    cudaFree(d_pos_x);
-    cudaFree(d_pos_y);
-    cudaFree(d_pos_z);
-    cudaFree(d_mov_x);
-    cudaFree(d_mov_y);
-    cudaFree(d_mov_z);
-    cudaFree(d_out_x);
-    cudaFree(d_out_y);
-    cudaFree(d_out_z);
-    cudaFree(d_out_cell);
+    cudaDeviceSynchronize();
 }
 
 } // extern "C"
