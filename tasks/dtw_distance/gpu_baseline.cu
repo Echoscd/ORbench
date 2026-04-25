@@ -380,14 +380,20 @@ static int    g_num_features = 0;
 static float* d_subjects  = nullptr;
 static float* d_distances = nullptr;
 
-extern "C" void solution_init(int          num_entries,
-                              int          num_features,
-                              const float* subjects,
-                              const float* query)
+extern "C" void solution_free(void)
 {
-    g_num_entries  = num_entries;
-    g_num_features = num_features;
+    if (d_subjects)  { cudaFree(d_subjects);  d_subjects  = nullptr; }
+    if (d_distances) { cudaFree(d_distances); d_distances = nullptr; }
+    g_num_entries  = 0;
+    g_num_features = 0;
+}
 
+extern "C" void solution_compute(int          num_entries,
+                                 int          num_features,
+                                 const float* subjects,
+                                 const float* query,
+                                 float*       distances)
+{
     if (num_features != 1023) {
         fprintf(stderr,
                 "[gpu_baseline] cuDTW SHFL_FULLDTW_1023 is length-specialized "
@@ -398,19 +404,19 @@ extern "C" void solution_init(int          num_entries,
     size_t subj_bytes  = (size_t)num_entries * num_features * sizeof(float);
     size_t dist_bytes  = (size_t)num_entries * sizeof(float);
 
-    cudaMalloc(&d_subjects,  subj_bytes);
-    cudaMalloc(&d_distances, dist_bytes);
+    if (g_num_entries != num_entries || g_num_features != num_features) {
+        solution_free();
+        cudaMalloc(&d_subjects,  subj_bytes);
+        cudaMalloc(&d_distances, dist_bytes);
+        g_num_entries  = num_entries;
+        g_num_features = num_features;
+    }
 
     cudaMemcpy(d_subjects, subjects, subj_bytes, cudaMemcpyHostToDevice);
     // Match cuDTW main.cu line 164: query lives in __constant__ memory.
     cudaMemcpyToSymbol(cQuery, query,
                        (size_t)num_features * sizeof(float));
-}
 
-extern "C" void solution_compute(int    num_entries,
-                                 int    num_features,
-                                 float* distances)
-{
     // Launch matches cuDTW DTW.hpp shfl_FullDTW_1023 dispatch:
     //   grid  = (num_entries, 1, 1)
     //   block = (32, 1, 1)
@@ -423,10 +429,5 @@ extern "C" void solution_compute(int    num_entries,
     cudaMemcpy(distances, d_distances,
                (size_t)num_entries * sizeof(float),
                cudaMemcpyDeviceToHost);
-}
-
-extern "C" void solution_free(void)
-{
-    if (d_subjects)  { cudaFree(d_subjects);  d_subjects  = nullptr; }
-    if (d_distances) { cudaFree(d_distances); d_distances = nullptr; }
+    cudaDeviceSynchronize();
 }

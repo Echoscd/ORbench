@@ -46,6 +46,7 @@ __global__ void TransposedMatrixVectorProductKernel(
 }
 
 // ===== Persistent device state =====
+static int    g_num_rows = 0;
 static int    g_num_cols = 0;
 static int    g_nnz = 0;
 static int*   d_col_ptrs    = nullptr;
@@ -54,39 +55,6 @@ static float* d_values      = nullptr;
 static float* d_vector      = nullptr;
 static float* d_answer      = nullptr;
 
-extern "C" void solution_init(int          num_rows,
-                              int          num_cols,
-                              const int*   col_ptrs,
-                              const int*   row_indices,
-                              const float* values,
-                              const float* vector)
-{
-    g_num_cols = num_cols;
-    g_nnz      = col_ptrs[num_cols];
-
-    cudaMalloc(&d_col_ptrs,    (num_cols + 1) * sizeof(int));
-    cudaMalloc(&d_row_indices, g_nnz * sizeof(int));
-    cudaMalloc(&d_values,      g_nnz * sizeof(float));
-    cudaMalloc(&d_vector,      num_rows * sizeof(float));
-    cudaMalloc(&d_answer,      num_cols * sizeof(float));
-
-    cudaMemcpy(d_col_ptrs,    col_ptrs,    (num_cols + 1) * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_row_indices, row_indices, g_nnz * sizeof(int),          cudaMemcpyHostToDevice);
-    cudaMemcpy(d_values,      values,      g_nnz * sizeof(float),        cudaMemcpyHostToDevice);
-    cudaMemcpy(d_vector,      vector,      num_rows * sizeof(float),     cudaMemcpyHostToDevice);
-}
-
-extern "C" void solution_compute(int num_cols, float* answer)
-{
-    int threadsPerBlock = 256;
-    int blocks = (num_cols + threadsPerBlock - 1) / threadsPerBlock;
-
-    TransposedMatrixVectorProductKernel<<<blocks, threadsPerBlock>>>(
-        num_cols, d_col_ptrs, d_row_indices, d_values, d_vector, d_answer);
-
-    cudaMemcpy(answer, d_answer, num_cols * sizeof(float), cudaMemcpyDeviceToHost);
-}
-
 extern "C" void solution_free(void)
 {
     if (d_col_ptrs)    { cudaFree(d_col_ptrs);    d_col_ptrs    = nullptr; }
@@ -94,4 +62,44 @@ extern "C" void solution_free(void)
     if (d_values)      { cudaFree(d_values);      d_values      = nullptr; }
     if (d_vector)      { cudaFree(d_vector);      d_vector      = nullptr; }
     if (d_answer)      { cudaFree(d_answer);      d_answer      = nullptr; }
+    g_num_rows = 0;
+    g_num_cols = 0;
+    g_nnz = 0;
+}
+
+extern "C" void solution_compute(int          num_rows,
+                                 int          num_cols,
+                                 const int*   col_ptrs,
+                                 const int*   row_indices,
+                                 const float* values,
+                                 const float* vector,
+                                 float*       answer)
+{
+    int nnz = col_ptrs[num_cols];
+
+    if (g_num_rows != num_rows || g_num_cols != num_cols || g_nnz != nnz) {
+        solution_free();
+        cudaMalloc(&d_col_ptrs,    (num_cols + 1) * sizeof(int));
+        cudaMalloc(&d_row_indices, nnz * sizeof(int));
+        cudaMalloc(&d_values,      nnz * sizeof(float));
+        cudaMalloc(&d_vector,      num_rows * sizeof(float));
+        cudaMalloc(&d_answer,      num_cols * sizeof(float));
+        g_num_rows = num_rows;
+        g_num_cols = num_cols;
+        g_nnz = nnz;
+    }
+
+    cudaMemcpy(d_col_ptrs,    col_ptrs,    (num_cols + 1) * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_row_indices, row_indices, nnz * sizeof(int),            cudaMemcpyHostToDevice);
+    cudaMemcpy(d_values,      values,      nnz * sizeof(float),          cudaMemcpyHostToDevice);
+    cudaMemcpy(d_vector,      vector,      num_rows * sizeof(float),     cudaMemcpyHostToDevice);
+
+    int threadsPerBlock = 256;
+    int blocks = (num_cols + threadsPerBlock - 1) / threadsPerBlock;
+
+    TransposedMatrixVectorProductKernel<<<blocks, threadsPerBlock>>>(
+        num_cols, d_col_ptrs, d_row_indices, d_values, d_vector, d_answer);
+
+    cudaMemcpy(answer, d_answer, num_cols * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
 }

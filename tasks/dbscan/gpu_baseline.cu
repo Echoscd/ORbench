@@ -27,8 +27,6 @@
 
 // Module-level state
 static int    g_N = 0;
-static float  g_eps = 0;
-static int    g_minPts = 0;
 static float* d_xs = NULL;
 static float* d_ys = NULL;
 static int*   d_neighbor_counts = NULL;
@@ -59,24 +57,29 @@ __global__ void countNeighborsKernel(
 
 // ===== Interface =====
 
-extern "C" void solution_init(int N, const float* xs, const float* ys,
-                               float eps, int minPts)
+extern "C" void solution_free(void)
 {
-    g_N = N;
-    g_eps = eps;
-    g_minPts = minPts;
+    if (d_xs)              { cudaFree(d_xs);              d_xs = NULL; }
+    if (d_ys)              { cudaFree(d_ys);              d_ys = NULL; }
+    if (d_neighbor_counts) { cudaFree(d_neighbor_counts); d_neighbor_counts = NULL; }
+    g_N = 0;
+}
 
-    cudaMalloc(&d_xs, N * sizeof(float));
-    cudaMalloc(&d_ys, N * sizeof(float));
-    cudaMalloc(&d_neighbor_counts, N * sizeof(int));
+extern "C" void solution_compute(int N, const float* xs, const float* ys,
+                                  float eps, int minPts, int* labels)
+{
+    if (g_N != N) {
+        solution_free();
+        cudaMalloc(&d_xs, N * sizeof(float));
+        cudaMalloc(&d_ys, N * sizeof(float));
+        cudaMalloc(&d_neighbor_counts, N * sizeof(int));
+        g_N = N;
+    }
 
     cudaMemcpy(d_xs, xs, N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_ys, ys, N * sizeof(float), cudaMemcpyHostToDevice);
-}
 
-extern "C" void solution_compute(int N, int* labels)
-{
-    float eps2 = g_eps * g_eps;
+    float eps2 = eps * eps;
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
 
@@ -88,11 +91,6 @@ extern "C" void solution_compute(int N, int* labels)
     int* h_counts = (int*)malloc(N * sizeof(int));
     cudaMemcpy(h_counts, d_neighbor_counts, N * sizeof(int), cudaMemcpyDeviceToHost);
 
-    float* h_xs = (float*)malloc(N * sizeof(float));
-    float* h_ys = (float*)malloc(N * sizeof(float));
-    cudaMemcpy(h_xs, d_xs, N * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_ys, d_ys, N * sizeof(float), cudaMemcpyDeviceToHost);
-
     // DBSCAN BFS (matches clusterThread + expandCluster from original)
     for (int i = 0; i < N; i++) labels[i] = UNPROCESSED;
 
@@ -102,7 +100,7 @@ extern "C" void solution_compute(int N, int* labels)
     for (int i = 0; i < N; i++) {
         if (labels[i] != UNPROCESSED) continue;
 
-        if (h_counts[i] < g_minPts) {
+        if (h_counts[i] < minPts) {
             labels[i] = NOISE;
             continue;
         }
@@ -116,8 +114,8 @@ extern "C" void solution_compute(int N, int* labels)
         // Add neighbors of i as seeds
         for (int j = 0; j < N; j++) {
             if (j == i) continue;
-            float dx = h_xs[i] - h_xs[j];
-            float dy = h_ys[i] - h_ys[j];
+            float dx = xs[i] - xs[j];
+            float dy = ys[i] - ys[j];
             if (dx*dx + dy*dy <= eps2) {
                 if (labels[j] == UNPROCESSED) seeds[tail++] = j;
                 if (labels[j] == UNPROCESSED || labels[j] == NOISE)
@@ -128,12 +126,12 @@ extern "C" void solution_compute(int N, int* labels)
         // BFS expand
         while (head < tail) {
             int q = seeds[head++];
-            if (h_counts[q] < g_minPts) continue;
+            if (h_counts[q] < minPts) continue;
 
             for (int j = 0; j < N; j++) {
                 if (labels[j] != UNPROCESSED && labels[j] != NOISE) continue;
-                float dx = h_xs[q] - h_xs[j];
-                float dy = h_ys[q] - h_ys[j];
+                float dx = xs[q] - xs[j];
+                float dy = ys[q] - ys[j];
                 if (dx*dx + dy*dy <= eps2) {
                     if (labels[j] == UNPROCESSED) seeds[tail++] = j;
                     labels[j] = clusterId;
@@ -144,13 +142,6 @@ extern "C" void solution_compute(int N, int* labels)
 
     free(seeds);
     free(h_counts);
-    free(h_xs);
-    free(h_ys);
-}
 
-extern "C" void solution_free(void)
-{
-    if (d_xs)              { cudaFree(d_xs);              d_xs = NULL; }
-    if (d_ys)              { cudaFree(d_ys);              d_ys = NULL; }
-    if (d_neighbor_counts) { cudaFree(d_neighbor_counts); d_neighbor_counts = NULL; }
+    cudaDeviceSynchronize();
 }

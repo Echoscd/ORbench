@@ -231,25 +231,40 @@ __global__ void InteractionForcesFluidKernel(
 
 extern "C" {
 
-void solution_init(int N,
-                   const float* xs, const float* ys, const float* zs,
-                   const float* vxs, const float* vys, const float* vzs,
-                   const float* rhos, const float* masses,
-                   float h, float cs0, float rhop0, float alpha_visc,
-                   const int* cell_begin, const int* cell_end,
-                   const int* sorted_idx,
-                   int grid_nx, int grid_ny, int grid_nz,
-                   float cell_size)
-{
-    g_N = N;
-    g_grid_nx = grid_nx;
-    g_grid_ny = grid_ny;
-    g_grid_nz = grid_nz;
-    g_cell_size = cell_size;
-    g_h = h;
-    g_cs0 = cs0;
-    g_alpha_visc = alpha_visc;
+static int g_num_cells = 0;
 
+void solution_free(void)
+{
+    if (d_xs)         { cudaFree(d_xs);         d_xs         = nullptr; }
+    if (d_ys)         { cudaFree(d_ys);         d_ys         = nullptr; }
+    if (d_zs)         { cudaFree(d_zs);         d_zs         = nullptr; }
+    if (d_vxs)        { cudaFree(d_vxs);        d_vxs        = nullptr; }
+    if (d_vys)        { cudaFree(d_vys);        d_vys        = nullptr; }
+    if (d_vzs)        { cudaFree(d_vzs);        d_vzs        = nullptr; }
+    if (d_rhos)       { cudaFree(d_rhos);       d_rhos       = nullptr; }
+    if (d_masses)     { cudaFree(d_masses);     d_masses     = nullptr; }
+    if (d_cell_begin) { cudaFree(d_cell_begin); d_cell_begin = nullptr; }
+    if (d_cell_end)   { cudaFree(d_cell_end);   d_cell_end   = nullptr; }
+    if (d_sorted_idx) { cudaFree(d_sorted_idx); d_sorted_idx = nullptr; }
+    if (d_ax)         { cudaFree(d_ax);         d_ax         = nullptr; }
+    if (d_ay)         { cudaFree(d_ay);         d_ay         = nullptr; }
+    if (d_az)         { cudaFree(d_az);         d_az         = nullptr; }
+    if (d_drhodt)     { cudaFree(d_drhodt);     d_drhodt     = nullptr; }
+    g_N = 0;
+    g_num_cells = 0;
+}
+
+void solution_compute(int N,
+                      const float* xs, const float* ys, const float* zs,
+                      const float* vxs, const float* vys, const float* vzs,
+                      const float* rhos, const float* masses,
+                      float h, float cs0, float rhop0, float alpha_visc,
+                      const int* cell_begin, const int* cell_end,
+                      const int* sorted_idx,
+                      int grid_nx, int grid_ny, int grid_nz,
+                      float cell_size,
+                      float* ax, float* ay, float* az, float* drhodt)
+{
     int num_cells = grid_nx * grid_ny * grid_nz;
 
     // Precompute Wendland kernel constants (3D)
@@ -259,22 +274,38 @@ void solution_init(int N,
     g_cteb = cs0 * cs0 * rhop0 / SPH_GAMMA;
     g_ovrhopzero = 1.0f / rhop0;
 
+    g_grid_nx = grid_nx;
+    g_grid_ny = grid_ny;
+    g_grid_nz = grid_nz;
+    g_cell_size = cell_size;
+    g_h = h;
+    g_cs0 = cs0;
+    g_alpha_visc = alpha_visc;
+
     size_t sz_f = (size_t)N * sizeof(float);
     size_t sz_i_n = (size_t)N * sizeof(int);
     size_t sz_i_c = (size_t)num_cells * sizeof(int);
 
-    // Allocate and copy input arrays to device
-    cudaMalloc(&d_xs, sz_f);
-    cudaMalloc(&d_ys, sz_f);
-    cudaMalloc(&d_zs, sz_f);
-    cudaMalloc(&d_vxs, sz_f);
-    cudaMalloc(&d_vys, sz_f);
-    cudaMalloc(&d_vzs, sz_f);
-    cudaMalloc(&d_rhos, sz_f);
-    cudaMalloc(&d_masses, sz_f);
-    cudaMalloc(&d_cell_begin, sz_i_c);
-    cudaMalloc(&d_cell_end, sz_i_c);
-    cudaMalloc(&d_sorted_idx, sz_i_n);
+    if (g_N != N || g_num_cells != num_cells) {
+        solution_free();
+        cudaMalloc(&d_xs, sz_f);
+        cudaMalloc(&d_ys, sz_f);
+        cudaMalloc(&d_zs, sz_f);
+        cudaMalloc(&d_vxs, sz_f);
+        cudaMalloc(&d_vys, sz_f);
+        cudaMalloc(&d_vzs, sz_f);
+        cudaMalloc(&d_rhos, sz_f);
+        cudaMalloc(&d_masses, sz_f);
+        cudaMalloc(&d_cell_begin, sz_i_c);
+        cudaMalloc(&d_cell_end, sz_i_c);
+        cudaMalloc(&d_sorted_idx, sz_i_n);
+        cudaMalloc(&d_ax, sz_f);
+        cudaMalloc(&d_ay, sz_f);
+        cudaMalloc(&d_az, sz_f);
+        cudaMalloc(&d_drhodt, sz_f);
+        g_N = N;
+        g_num_cells = num_cells;
+    }
 
     cudaMemcpy(d_xs, xs, sz_f, cudaMemcpyHostToDevice);
     cudaMemcpy(d_ys, ys, sz_f, cudaMemcpyHostToDevice);
@@ -288,16 +319,6 @@ void solution_init(int N,
     cudaMemcpy(d_cell_end, cell_end, sz_i_c, cudaMemcpyHostToDevice);
     cudaMemcpy(d_sorted_idx, sorted_idx, sz_i_n, cudaMemcpyHostToDevice);
 
-    // Allocate output arrays on device
-    cudaMalloc(&d_ax, sz_f);
-    cudaMalloc(&d_ay, sz_f);
-    cudaMalloc(&d_az, sz_f);
-    cudaMalloc(&d_drhodt, sz_f);
-}
-
-void solution_compute(int N,
-                      float* ax, float* ay, float* az, float* drhodt)
-{
     dim3 block(BLOCK_SIZE);
     dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
@@ -307,37 +328,17 @@ void solution_compute(int N,
         d_vxs, d_vys, d_vzs,
         d_rhos, d_masses,
         d_cell_begin, d_cell_end, d_sorted_idx,
-        g_grid_nx, g_grid_ny, g_grid_nz,
-        g_cell_size,
-        g_h, g_bwenh, g_kernelsize2,
-        g_cs0, g_alpha_visc, g_ovrhopzero, g_cteb,
+        grid_nx, grid_ny, grid_nz,
+        cell_size,
+        h, g_bwenh, g_kernelsize2,
+        cs0, alpha_visc, g_ovrhopzero, g_cteb,
         d_ax, d_ay, d_az, d_drhodt);
 
-    // Copy results back to host
-    size_t sz_f = (size_t)N * sizeof(float);
     cudaMemcpy(ax,     d_ax,     sz_f, cudaMemcpyDeviceToHost);
     cudaMemcpy(ay,     d_ay,     sz_f, cudaMemcpyDeviceToHost);
     cudaMemcpy(az,     d_az,     sz_f, cudaMemcpyDeviceToHost);
     cudaMemcpy(drhodt, d_drhodt, sz_f, cudaMemcpyDeviceToHost);
-}
-
-void solution_free(void)
-{
-    cudaFree(d_xs);
-    cudaFree(d_ys);
-    cudaFree(d_zs);
-    cudaFree(d_vxs);
-    cudaFree(d_vys);
-    cudaFree(d_vzs);
-    cudaFree(d_rhos);
-    cudaFree(d_masses);
-    cudaFree(d_cell_begin);
-    cudaFree(d_cell_end);
-    cudaFree(d_sorted_idx);
-    cudaFree(d_ax);
-    cudaFree(d_ay);
-    cudaFree(d_az);
-    cudaFree(d_drhodt);
+    cudaDeviceSynchronize();
 }
 
 } // extern "C"

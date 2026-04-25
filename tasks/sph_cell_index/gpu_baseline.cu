@@ -97,46 +97,61 @@ __global__ void KerCalcBeginEndCell(unsigned int n,
 
 extern "C" {
 
-void solution_init(int N,
-                   const float* xs, const float* ys, const float* zs,
-                   float cell_size, int grid_nx, int grid_ny, int grid_nz)
+static int g_num_cells = 0;
+
+void solution_free(void)
 {
-    g_N = N;
+    if (d_xs)         { cudaFree(d_xs);         d_xs         = nullptr; }
+    if (d_ys)         { cudaFree(d_ys);         d_ys         = nullptr; }
+    if (d_zs)         { cudaFree(d_zs);         d_zs         = nullptr; }
+    if (d_cell_ids)   { cudaFree(d_cell_ids);   d_cell_ids   = nullptr; }
+    if (d_indices)    { cudaFree(d_indices);    d_indices    = nullptr; }
+    if (d_cell_begin) { cudaFree(d_cell_begin); d_cell_begin = nullptr; }
+    if (d_cell_end)   { cudaFree(d_cell_end);   d_cell_end   = nullptr; }
+    g_N = 0;
+    g_num_cells = 0;
+}
+
+void solution_compute(int N,
+                      const float* xs, const float* ys, const float* zs,
+                      float cell_size,
+                      int grid_nx, int grid_ny, int grid_nz,
+                      int num_cells,
+                      int* sorted_indices, int* cell_begin, int* cell_end)
+{
+    size_t sz_f = (size_t)N * sizeof(float);
+    size_t sz_i = (size_t)N * sizeof(int);
+    size_t sz_cells = (size_t)num_cells * sizeof(int);
+
+    if (g_N != N || g_num_cells != num_cells) {
+        solution_free();
+        cudaMalloc(&d_xs, sz_f);
+        cudaMalloc(&d_ys, sz_f);
+        cudaMalloc(&d_zs, sz_f);
+        cudaMalloc(&d_cell_ids, sz_i);
+        cudaMalloc(&d_indices, sz_i);
+        cudaMalloc(&d_cell_begin, sz_cells);
+        cudaMalloc(&d_cell_end, sz_cells);
+        g_N = N;
+        g_num_cells = num_cells;
+    }
+
     g_cell_size = cell_size;
     g_grid_nx = grid_nx;
     g_grid_ny = grid_ny;
     g_grid_nz = grid_nz;
 
-    size_t sz_f = (size_t)N * sizeof(float);
-    size_t sz_i = (size_t)N * sizeof(int);
-    int num_cells = grid_nx * grid_ny * grid_nz;
-    size_t sz_cells = (size_t)num_cells * sizeof(int);
-
-    // Allocate and copy input arrays to device
-    cudaMalloc(&d_xs, sz_f);
-    cudaMalloc(&d_ys, sz_f);
-    cudaMalloc(&d_zs, sz_f);
     cudaMemcpy(d_xs, xs, sz_f, cudaMemcpyHostToDevice);
     cudaMemcpy(d_ys, ys, sz_f, cudaMemcpyHostToDevice);
     cudaMemcpy(d_zs, zs, sz_f, cudaMemcpyHostToDevice);
 
-    // Allocate intermediate and output arrays on device
-    cudaMalloc(&d_cell_ids, sz_i);
-    cudaMalloc(&d_indices, sz_i);
-    cudaMalloc(&d_cell_begin, sz_cells);
-    cudaMalloc(&d_cell_end, sz_cells);
-}
-
-void solution_compute(int N, int num_cells,
-                      int* sorted_indices, int* cell_begin, int* cell_end)
-{
     dim3 block(BLOCK_SIZE);
     dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
     // Step 1: Compute cell_id for each particle
     KerComputeCellIndex<<<grid, block>>>(
         N, d_xs, d_ys, d_zs,
-        g_cell_size, g_grid_nx, g_grid_ny,
+        cell_size, grid_nx, grid_ny,
         d_cell_ids, d_indices);
 
     // Step 2: Sort by cell_id using thrust::sort_by_key
@@ -158,17 +173,7 @@ void solution_compute(int N, int num_cells,
     cudaMemcpy(sorted_indices, d_indices,    (size_t)N * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(cell_begin,     d_cell_begin, (size_t)num_cells * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(cell_end,       d_cell_end,   (size_t)num_cells * sizeof(int), cudaMemcpyDeviceToHost);
-}
-
-void solution_free(void)
-{
-    cudaFree(d_xs);
-    cudaFree(d_ys);
-    cudaFree(d_zs);
-    cudaFree(d_cell_ids);
-    cudaFree(d_indices);
-    cudaFree(d_cell_begin);
-    cudaFree(d_cell_end);
+    cudaDeviceSynchronize();
 }
 
 } // extern "C"

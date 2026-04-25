@@ -1072,39 +1072,47 @@ static bondsDateStruct intializeDateKernelCpu(int d, int m, int y)
 
 extern "C" {
 
-void solution_init(int N,
-                   const int* issue_year, const int* issue_month, const int* issue_day,
-                   const int* maturity_year, const int* maturity_month, const int* maturity_day,
-                   const float* rates, float coupon_freq)
+void solution_free(void)
 {
-	g_N = N;
-	g_issue_year = issue_year;
-	g_issue_month = issue_month;
-	g_issue_day = issue_day;
-	g_maturity_year = maturity_year;
-	g_maturity_month = maturity_month;
-	g_maturity_day = maturity_day;
-	g_rates = rates;
-	g_coupon_freq = coupon_freq;
-
-	// Allocate persistent GPU memory for inArgs
-	cudaMalloc(&d_discountCurve, N * sizeof(bondsYieldTermStruct));
-	cudaMalloc(&d_repoCurve, N * sizeof(bondsYieldTermStruct));
-	cudaMalloc(&d_currDate, N * sizeof(bondsDateStruct));
-	cudaMalloc(&d_maturityDate, N * sizeof(bondsDateStruct));
-	cudaMalloc(&d_bondCleanPrice, N * sizeof(dataType));
-	cudaMalloc(&d_bond, N * sizeof(bondStruct));
-	cudaMalloc(&d_dummyStrike, N * sizeof(dataType));
-
-	// Allocate persistent GPU memory for results
-	cudaMalloc(&d_dirtyPrice, N * sizeof(dataType));
-	cudaMalloc(&d_accruedAmountCurrDate, N * sizeof(dataType));
-	cudaMalloc(&d_cleanPrice, N * sizeof(dataType));
-	cudaMalloc(&d_bondForwardVal, N * sizeof(dataType));
+	if (d_discountCurve)         { cudaFree(d_discountCurve);         d_discountCurve         = NULL; }
+	if (d_repoCurve)             { cudaFree(d_repoCurve);             d_repoCurve             = NULL; }
+	if (d_currDate)              { cudaFree(d_currDate);              d_currDate              = NULL; }
+	if (d_maturityDate)          { cudaFree(d_maturityDate);          d_maturityDate          = NULL; }
+	if (d_bondCleanPrice)        { cudaFree(d_bondCleanPrice);        d_bondCleanPrice        = NULL; }
+	if (d_bond)                  { cudaFree(d_bond);                  d_bond                  = NULL; }
+	if (d_dummyStrike)           { cudaFree(d_dummyStrike);           d_dummyStrike           = NULL; }
+	if (d_dirtyPrice)            { cudaFree(d_dirtyPrice);            d_dirtyPrice            = NULL; }
+	if (d_accruedAmountCurrDate) { cudaFree(d_accruedAmountCurrDate); d_accruedAmountCurrDate = NULL; }
+	if (d_cleanPrice)            { cudaFree(d_cleanPrice);            d_cleanPrice            = NULL; }
+	if (d_bondForwardVal)        { cudaFree(d_bondForwardVal);        d_bondForwardVal        = NULL; }
+	g_N = 0;
 }
 
-void solution_compute(int N, float* prices)
+void solution_compute(int N,
+                      const int* issue_year, const int* issue_month, const int* issue_day,
+                      const int* maturity_year, const int* maturity_month, const int* maturity_day,
+                      const float* rates, float coupon_freq,
+                      float* prices)
 {
+	if (g_N != N) {
+		solution_free();
+		// Allocate persistent GPU memory for inArgs
+		cudaMalloc(&d_discountCurve, N * sizeof(bondsYieldTermStruct));
+		cudaMalloc(&d_repoCurve, N * sizeof(bondsYieldTermStruct));
+		cudaMalloc(&d_currDate, N * sizeof(bondsDateStruct));
+		cudaMalloc(&d_maturityDate, N * sizeof(bondsDateStruct));
+		cudaMalloc(&d_bondCleanPrice, N * sizeof(dataType));
+		cudaMalloc(&d_bond, N * sizeof(bondStruct));
+		cudaMalloc(&d_dummyStrike, N * sizeof(dataType));
+
+		// Allocate persistent GPU memory for results
+		cudaMalloc(&d_dirtyPrice, N * sizeof(dataType));
+		cudaMalloc(&d_accruedAmountCurrDate, N * sizeof(dataType));
+		cudaMalloc(&d_cleanPrice, N * sizeof(dataType));
+		cudaMalloc(&d_bondForwardVal, N * sizeof(dataType));
+		g_N = N;
+	}
+
 	// Build inArgs on host (matching bondsEngine.c / cpu_reference.c setup)
 	bondsYieldTermStruct* h_discountCurve = (bondsYieldTermStruct*)malloc(N * sizeof(bondsYieldTermStruct));
 	bondsYieldTermStruct* h_repoCurve = (bondsYieldTermStruct*)malloc(N * sizeof(bondsYieldTermStruct));
@@ -1120,16 +1128,16 @@ void solution_compute(int N, float* prices)
 		int repoCompounding = SIMPLE_INTEREST;
 		dataType repoCompoundFreq = 1;
 
-		bondsDateStruct bondIssueDate = intializeDateKernelCpu(g_issue_day[numBond], g_issue_month[numBond], g_issue_year[numBond]);
-		bondsDateStruct bondMaturityDate = intializeDateKernelCpu(g_maturity_day[numBond], g_maturity_month[numBond], g_maturity_year[numBond]);
+		bondsDateStruct bondIssueDate = intializeDateKernelCpu(issue_day[numBond], issue_month[numBond], issue_year[numBond]);
+		bondsDateStruct bondMaturityDate = intializeDateKernelCpu(maturity_day[numBond], maturity_month[numBond], maturity_year[numBond]);
 		bondsDateStruct todaysDate = intializeDateKernelCpu(bondMaturityDate.day-1, bondMaturityDate.month, bondMaturityDate.year);
 
 		bondStruct bond;
 		bond.startDate = bondIssueDate;
 		bond.maturityDate = bondMaturityDate;
-		bond.rate = g_rates[numBond];
+		bond.rate = rates[numBond];
 
-		dataType bondCouponFrequency = (dataType)g_coupon_freq;
+		dataType bondCouponFrequency = (dataType)coupon_freq;
 		dataType bondCleanPrice = 89.97693786;
 
 		bondsYieldTermStruct bondCurve;
@@ -1221,33 +1229,8 @@ void solution_compute(int N, float* prices)
 	free(h_accruedAmountCurrDate);
 	free(h_cleanPrice);
 	free(h_bondForwardVal);
-}
 
-void solution_free(void)
-{
-	cudaFree(d_discountCurve);
-	cudaFree(d_repoCurve);
-	cudaFree(d_currDate);
-	cudaFree(d_maturityDate);
-	cudaFree(d_bondCleanPrice);
-	cudaFree(d_bond);
-	cudaFree(d_dummyStrike);
-	cudaFree(d_dirtyPrice);
-	cudaFree(d_accruedAmountCurrDate);
-	cudaFree(d_cleanPrice);
-	cudaFree(d_bondForwardVal);
-
-	d_discountCurve = NULL;
-	d_repoCurve = NULL;
-	d_currDate = NULL;
-	d_maturityDate = NULL;
-	d_bondCleanPrice = NULL;
-	d_bond = NULL;
-	d_dummyStrike = NULL;
-	d_dirtyPrice = NULL;
-	d_accruedAmountCurrDate = NULL;
-	d_cleanPrice = NULL;
-	d_bondForwardVal = NULL;
+	cudaDeviceSynchronize();
 }
 
 } // extern "C"

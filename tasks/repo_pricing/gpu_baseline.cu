@@ -1153,40 +1153,69 @@ static dataType* d_bondForwardVal = NULL;
 
 extern "C" {
 
-void solution_init(int N,
-                   const int* settle_year, const int* settle_month, const int* settle_day,
-                   const int* delivery_year, const int* delivery_month, const int* delivery_day,
-                   const int* issue_year, const int* issue_month, const int* issue_day,
-                   const int* maturity_year, const int* maturity_month, const int* maturity_day,
-                   const float* bond_rates, const float* repo_rates,
-                   const float* bond_clean_prices, const float* dummy_strikes)
+void solution_free(void)
 {
-	g_N = N;
+	if (d_discountCurve)             { cudaFree(d_discountCurve);             d_discountCurve             = NULL; }
+	if (d_repoCurve)                 { cudaFree(d_repoCurve);                 d_repoCurve                 = NULL; }
+	if (d_settlementDate)            { cudaFree(d_settlementDate);            d_settlementDate            = NULL; }
+	if (d_deliveryDate)              { cudaFree(d_deliveryDate);              d_deliveryDate              = NULL; }
+	if (d_maturityDate)              { cudaFree(d_maturityDate);              d_maturityDate              = NULL; }
+	if (d_repoDeliveryDate)          { cudaFree(d_repoDeliveryDate);          d_repoDeliveryDate          = NULL; }
+	if (d_bondCleanPrice)            { cudaFree(d_bondCleanPrice);            d_bondCleanPrice            = NULL; }
+	if (d_bond)                      { cudaFree(d_bond);                      d_bond                      = NULL; }
+	if (d_dummyStrike)               { cudaFree(d_dummyStrike);               d_dummyStrike               = NULL; }
+	if (d_dirtyPrice)                { cudaFree(d_dirtyPrice);                d_dirtyPrice                = NULL; }
+	if (d_accruedAmountSettlement)   { cudaFree(d_accruedAmountSettlement);   d_accruedAmountSettlement   = NULL; }
+	if (d_accruedAmountDeliveryDate) { cudaFree(d_accruedAmountDeliveryDate); d_accruedAmountDeliveryDate = NULL; }
+	if (d_cleanPrice)                { cudaFree(d_cleanPrice);                d_cleanPrice                = NULL; }
+	if (d_forwardSpotIncome)         { cudaFree(d_forwardSpotIncome);         d_forwardSpotIncome         = NULL; }
+	if (d_underlyingBondFwd)         { cudaFree(d_underlyingBondFwd);         d_underlyingBondFwd         = NULL; }
+	if (d_repoNpv)                   { cudaFree(d_repoNpv);                   d_repoNpv                   = NULL; }
+	if (d_repoCleanForwardPrice)     { cudaFree(d_repoCleanForwardPrice);     d_repoCleanForwardPrice     = NULL; }
+	if (d_repoDirtyForwardPrice)     { cudaFree(d_repoDirtyForwardPrice);     d_repoDirtyForwardPrice     = NULL; }
+	if (d_repoImpliedYield)          { cudaFree(d_repoImpliedYield);          d_repoImpliedYield          = NULL; }
+	if (d_marketRepoRate)            { cudaFree(d_marketRepoRate);            d_marketRepoRate            = NULL; }
+	if (d_bondForwardVal)            { cudaFree(d_bondForwardVal);            d_bondForwardVal            = NULL; }
+	g_N = 0;
+}
 
-	// Allocate device memory for inArgs
-	cudaMalloc(&d_discountCurve, N * sizeof(repoYieldTermStruct));
-	cudaMalloc(&d_repoCurve, N * sizeof(repoYieldTermStruct));
-	cudaMalloc(&d_settlementDate, N * sizeof(repoDateStruct));
-	cudaMalloc(&d_deliveryDate, N * sizeof(repoDateStruct));
-	cudaMalloc(&d_maturityDate, N * sizeof(repoDateStruct));
-	cudaMalloc(&d_repoDeliveryDate, N * sizeof(repoDateStruct));
-	cudaMalloc(&d_bondCleanPrice, N * sizeof(dataType));
-	cudaMalloc(&d_bond, N * sizeof(bondStruct));
-	cudaMalloc(&d_dummyStrike, N * sizeof(dataType));
+void solution_compute(int N,
+                      const int* settle_year, const int* settle_month, const int* settle_day,
+                      const int* delivery_year, const int* delivery_month, const int* delivery_day,
+                      const int* issue_year, const int* issue_month, const int* issue_day,
+                      const int* maturity_year, const int* maturity_month, const int* maturity_day,
+                      const float* bond_rates, const float* repo_rates,
+                      const float* bond_clean_prices, const float* dummy_strikes,
+                      float* prices)
+{
+	if (g_N != N) {
+		solution_free();
+		// Allocate device memory for inArgs
+		cudaMalloc(&d_discountCurve, N * sizeof(repoYieldTermStruct));
+		cudaMalloc(&d_repoCurve, N * sizeof(repoYieldTermStruct));
+		cudaMalloc(&d_settlementDate, N * sizeof(repoDateStruct));
+		cudaMalloc(&d_deliveryDate, N * sizeof(repoDateStruct));
+		cudaMalloc(&d_maturityDate, N * sizeof(repoDateStruct));
+		cudaMalloc(&d_repoDeliveryDate, N * sizeof(repoDateStruct));
+		cudaMalloc(&d_bondCleanPrice, N * sizeof(dataType));
+		cudaMalloc(&d_bond, N * sizeof(bondStruct));
+		cudaMalloc(&d_dummyStrike, N * sizeof(dataType));
 
-	// Allocate device memory for results
-	cudaMalloc(&d_dirtyPrice, N * sizeof(dataType));
-	cudaMalloc(&d_accruedAmountSettlement, N * sizeof(dataType));
-	cudaMalloc(&d_accruedAmountDeliveryDate, N * sizeof(dataType));
-	cudaMalloc(&d_cleanPrice, N * sizeof(dataType));
-	cudaMalloc(&d_forwardSpotIncome, N * sizeof(dataType));
-	cudaMalloc(&d_underlyingBondFwd, N * sizeof(dataType));
-	cudaMalloc(&d_repoNpv, N * sizeof(dataType));
-	cudaMalloc(&d_repoCleanForwardPrice, N * sizeof(dataType));
-	cudaMalloc(&d_repoDirtyForwardPrice, N * sizeof(dataType));
-	cudaMalloc(&d_repoImpliedYield, N * sizeof(dataType));
-	cudaMalloc(&d_marketRepoRate, N * sizeof(dataType));
-	cudaMalloc(&d_bondForwardVal, N * sizeof(dataType));
+		// Allocate device memory for results
+		cudaMalloc(&d_dirtyPrice, N * sizeof(dataType));
+		cudaMalloc(&d_accruedAmountSettlement, N * sizeof(dataType));
+		cudaMalloc(&d_accruedAmountDeliveryDate, N * sizeof(dataType));
+		cudaMalloc(&d_cleanPrice, N * sizeof(dataType));
+		cudaMalloc(&d_forwardSpotIncome, N * sizeof(dataType));
+		cudaMalloc(&d_underlyingBondFwd, N * sizeof(dataType));
+		cudaMalloc(&d_repoNpv, N * sizeof(dataType));
+		cudaMalloc(&d_repoCleanForwardPrice, N * sizeof(dataType));
+		cudaMalloc(&d_repoDirtyForwardPrice, N * sizeof(dataType));
+		cudaMalloc(&d_repoImpliedYield, N * sizeof(dataType));
+		cudaMalloc(&d_marketRepoRate, N * sizeof(dataType));
+		cudaMalloc(&d_bondForwardVal, N * sizeof(dataType));
+		g_N = N;
+	}
 
 	// Build host inArgs (matching repoEngine.c / cpu_reference.c setup)
 	repoYieldTermStruct* h_discountCurve = (repoYieldTermStruct*)malloc(N * sizeof(repoYieldTermStruct));
@@ -1260,10 +1289,7 @@ void solution_init(int N,
 	free(h_bondCleanPrice);
 	free(h_bond);
 	free(h_dummyStrike);
-}
 
-void solution_compute(int N, float* prices)
-{
 	// Build device structs
 	inArgsStruct inArgs;
 	inArgs.discountCurve = d_discountCurve;
@@ -1322,54 +1348,8 @@ void solution_compute(int N, float* prices)
 
 	for (int r = 0; r < 12; r++)
 		free(h_res[r]);
-}
 
-void solution_free(void)
-{
-	cudaFree(d_discountCurve);
-	cudaFree(d_repoCurve);
-	cudaFree(d_settlementDate);
-	cudaFree(d_deliveryDate);
-	cudaFree(d_maturityDate);
-	cudaFree(d_repoDeliveryDate);
-	cudaFree(d_bondCleanPrice);
-	cudaFree(d_bond);
-	cudaFree(d_dummyStrike);
-
-	cudaFree(d_dirtyPrice);
-	cudaFree(d_accruedAmountSettlement);
-	cudaFree(d_accruedAmountDeliveryDate);
-	cudaFree(d_cleanPrice);
-	cudaFree(d_forwardSpotIncome);
-	cudaFree(d_underlyingBondFwd);
-	cudaFree(d_repoNpv);
-	cudaFree(d_repoCleanForwardPrice);
-	cudaFree(d_repoDirtyForwardPrice);
-	cudaFree(d_repoImpliedYield);
-	cudaFree(d_marketRepoRate);
-	cudaFree(d_bondForwardVal);
-
-	d_discountCurve = NULL;
-	d_repoCurve = NULL;
-	d_settlementDate = NULL;
-	d_deliveryDate = NULL;
-	d_maturityDate = NULL;
-	d_repoDeliveryDate = NULL;
-	d_bondCleanPrice = NULL;
-	d_bond = NULL;
-	d_dummyStrike = NULL;
-	d_dirtyPrice = NULL;
-	d_accruedAmountSettlement = NULL;
-	d_accruedAmountDeliveryDate = NULL;
-	d_cleanPrice = NULL;
-	d_forwardSpotIncome = NULL;
-	d_underlyingBondFwd = NULL;
-	d_repoNpv = NULL;
-	d_repoCleanForwardPrice = NULL;
-	d_repoDirtyForwardPrice = NULL;
-	d_repoImpliedYield = NULL;
-	d_marketRepoRate = NULL;
-	d_bondForwardVal = NULL;
+	cudaDeviceSynchronize();
 }
 
 } // extern "C"

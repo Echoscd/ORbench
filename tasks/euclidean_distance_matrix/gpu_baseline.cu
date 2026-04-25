@@ -91,33 +91,47 @@ __global__ void compute_distances(float * ref,
 }
 
 // ===== Persistent device state =====
+static int    g_ref_nb   = 0;
+static int    g_query_nb = 0;
+static int    g_dim      = 0;
 static float* d_ref      = nullptr;
 static float* d_query    = nullptr;
 static float* d_dist     = nullptr;
 
-extern "C" void solution_init(int          ref_nb,
-                              int          query_nb,
-                              int          dim,
-                              const float* ref,
-                              const float* query)
+extern "C" void solution_free(void)
+{
+    if (d_ref)   { cudaFree(d_ref);   d_ref   = nullptr; }
+    if (d_query) { cudaFree(d_query); d_query = nullptr; }
+    if (d_dist)  { cudaFree(d_dist);  d_dist  = nullptr; }
+    g_ref_nb = 0;
+    g_query_nb = 0;
+    g_dim = 0;
+}
+
+extern "C" void solution_compute(int          ref_nb,
+                                 int          query_nb,
+                                 int          dim,
+                                 const float* ref,
+                                 const float* query,
+                                 float*       dist)
 {
     size_t ref_bytes   = (size_t)dim * ref_nb   * sizeof(float);
     size_t query_bytes = (size_t)dim * query_nb * sizeof(float);
     size_t dist_bytes  = (size_t)ref_nb * query_nb * sizeof(float);
 
-    cudaMalloc(&d_ref,   ref_bytes);
-    cudaMalloc(&d_query, query_bytes);
-    cudaMalloc(&d_dist,  dist_bytes);
+    if (g_ref_nb != ref_nb || g_query_nb != query_nb || g_dim != dim) {
+        solution_free();
+        cudaMalloc(&d_ref,   ref_bytes);
+        cudaMalloc(&d_query, query_bytes);
+        cudaMalloc(&d_dist,  dist_bytes);
+        g_ref_nb = ref_nb;
+        g_query_nb = query_nb;
+        g_dim = dim;
+    }
 
     cudaMemcpy(d_ref,   ref,   ref_bytes,   cudaMemcpyHostToDevice);
     cudaMemcpy(d_query, query, query_bytes, cudaMemcpyHostToDevice);
-}
 
-extern "C" void solution_compute(int    ref_nb,
-                                 int    query_nb,
-                                 int    dim,
-                                 float* dist)
-{
     // Launch matches kNN-CUDA's knn_cuda_global() (lines around 540) —
     //   block = (BLOCK_DIM, BLOCK_DIM)
     //   grid  = (ceil(query_nb/BLOCK_DIM), ceil(ref_nb/BLOCK_DIM))
@@ -134,11 +148,5 @@ extern "C" void solution_compute(int    ref_nb,
     cudaMemcpy(dist, d_dist,
                (size_t)ref_nb * query_nb * sizeof(float),
                cudaMemcpyDeviceToHost);
-}
-
-extern "C" void solution_free(void)
-{
-    if (d_ref)   { cudaFree(d_ref);   d_ref   = nullptr; }
-    if (d_query) { cudaFree(d_query); d_query = nullptr; }
-    if (d_dist)  { cudaFree(d_dist);  d_dist  = nullptr; }
+    cudaDeviceSynchronize();
 }

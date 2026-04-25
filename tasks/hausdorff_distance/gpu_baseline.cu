@@ -91,26 +91,6 @@ static vec_2d* d_points = nullptr;
 static int*    d_space_offsets = nullptr;
 static float*  d_results = nullptr;
 
-extern "C" void solution_init(int          num_points,
-                              int          num_spaces,
-                              const float* points_xy,
-                              const int*   space_offsets)
-{
-    g_num_points = num_points;
-    g_num_spaces = num_spaces;
-
-    size_t pts_bytes = (size_t)num_points * sizeof(vec_2d);
-    size_t off_bytes = (size_t)num_spaces * sizeof(int);
-    size_t res_bytes = (size_t)num_spaces * num_spaces * sizeof(float);
-
-    cudaMalloc(&d_points,        pts_bytes);
-    cudaMalloc(&d_space_offsets, off_bytes);
-    cudaMalloc(&d_results,       res_bytes);
-
-    cudaMemcpy(d_points,        points_xy,     pts_bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_space_offsets, space_offsets, off_bytes, cudaMemcpyHostToDevice);
-}
-
 // Tiny init kernel (cuSpatial uses thrust::fill_n with -1 sentinel for atomicMax).
 __global__ void hausdorff_init_results(int n, float* r)
 {
@@ -118,10 +98,37 @@ __global__ void hausdorff_init_results(int n, float* r)
     if (i < n) r[i] = -1.0f;
 }
 
-extern "C" void solution_compute(int    num_points,
-                                 int    num_spaces,
-                                 float* results)
+extern "C" void solution_free(void)
 {
+    if (d_points)        { cudaFree(d_points);        d_points        = nullptr; }
+    if (d_space_offsets) { cudaFree(d_space_offsets); d_space_offsets = nullptr; }
+    if (d_results)       { cudaFree(d_results);       d_results       = nullptr; }
+    g_num_points = 0;
+    g_num_spaces = 0;
+}
+
+extern "C" void solution_compute(int          num_points,
+                                 int          num_spaces,
+                                 const float* points_xy,
+                                 const int*   space_offsets,
+                                 float*       results)
+{
+    size_t pts_bytes = (size_t)num_points * sizeof(vec_2d);
+    size_t off_bytes = (size_t)num_spaces * sizeof(int);
+    size_t res_bytes = (size_t)num_spaces * num_spaces * sizeof(float);
+
+    if (g_num_points != num_points || g_num_spaces != num_spaces) {
+        solution_free();
+        cudaMalloc(&d_points,        pts_bytes);
+        cudaMalloc(&d_space_offsets, off_bytes);
+        cudaMalloc(&d_results,       res_bytes);
+        g_num_points = num_points;
+        g_num_spaces = num_spaces;
+    }
+
+    cudaMemcpy(d_points,        points_xy,     pts_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_space_offsets, space_offsets, off_bytes, cudaMemcpyHostToDevice);
+
     int n_results = num_spaces * num_spaces;
 
     int init_block = 256;
@@ -136,11 +143,5 @@ extern "C" void solution_compute(int    num_points,
     cudaMemcpy(results, d_results,
                (size_t)n_results * sizeof(float),
                cudaMemcpyDeviceToHost);
-}
-
-extern "C" void solution_free(void)
-{
-    if (d_points)        { cudaFree(d_points);        d_points        = nullptr; }
-    if (d_space_offsets) { cudaFree(d_space_offsets); d_space_offsets = nullptr; }
-    if (d_results)       { cudaFree(d_results);       d_results       = nullptr; }
+    cudaDeviceSynchronize();
 }
