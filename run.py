@@ -211,6 +211,30 @@ def cmd_eval(args):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  audit (timing-audit pass: S0 screen / S1 reset-revalidate / S2 cold-warm)
+# ═══════════════════════════════════════════════════════════════
+
+def cmd_audit(args):
+    from framework.audit import audit_run
+
+    cli_args = {"arch": args.arch, "timeout": args.timeout}
+    config = load_config(cli_args=cli_args)
+    set_config(config)
+
+    for size in (args.sizes or ["medium"]):
+        audit_run(
+            run_name=args.run,
+            size=size,
+            task_ids=args.tasks,
+            arch=config.gpu.arch,
+            audit_rounds=args.audit_rounds,
+            cold_runs=args.cold_runs,
+            timeout=args.timeout,
+            only_passing=not args.all_samples,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
 #  analyze
 # ═══════════════════════════════════════════════════════════════
 
@@ -425,6 +449,19 @@ def main():
     p_eval.add_argument("--save-nsys", action="store_true", help="Save nsys CSV and summary to run directory")
 
     # ── analyze ──
+    p_aud = subparsers.add_parser(
+        "audit", help="Timing audit of passing solutions (S0 screen / S1 reset-revalidate / S2 cold-warm)")
+    p_aud.add_argument("--run", required=True)
+    p_aud.add_argument("--tasks", nargs="*", default=None)
+    p_aud.add_argument("--sizes", nargs="*", default=["medium"],
+                       help="Sizes to audit (default: medium)")
+    p_aud.add_argument("--arch", default=None, help="GPU architecture (overrides config.yaml)")
+    p_aud.add_argument("--timeout", type=int, default=None)
+    p_aud.add_argument("--audit-rounds", type=int, default=3, help="S1 reset-revalidate rounds")
+    p_aud.add_argument("--cold-runs", type=int, default=5, help="S2 fresh-process cold runs")
+    p_aud.add_argument("--all-samples", action="store_true",
+                       help="Audit every sample, not just ones that passed the latest eval")
+
     p_ana = subparsers.add_parser("analyze", help="Analyze evaluation results")
     p_ana.add_argument("--run", required=True)
     p_ana.add_argument("--output", default=None, help="Save summary JSON")
@@ -446,6 +483,8 @@ def main():
         cmd_generate_batch(args)
     elif args.command == "eval":
         cmd_eval(args)
+    elif args.command == "audit":
+        cmd_audit(args)
     elif args.command == "analyze":
         cmd_analyze(args)
     elif args.command == "compare":

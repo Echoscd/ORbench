@@ -230,11 +230,21 @@ def benchmark_solution(
     result.data_dir = data_dir
     result.size_name = chosen_size
 
-    # Always run with --validate: single execution produces timing + output.txt
-    # Pass warmup/trials from config so harness uses the configured values
+    # Remove stale artifacts so a failed run can never inherit a previous
+    # solution's output.txt / timing.json (audit hardening).
+    for _stale in ("output.txt", "timing.json"):
+        _p = _os.path.join(data_dir, _stale)
+        if _os.path.exists(_p):
+            try:
+                _os.remove(_p)
+            except OSError:
+                pass
+
+    # Timing run: warmup + timed trials only. Validation is deliberately NOT
+    # done in this process — see the fresh-process validation run below (A2).
     config = get_config()
     exe_args = [
-        data_dir, "--validate",
+        data_dir,
         "--warmup", str(config.eval.warmup),
         "--trials", str(config.eval.num_trials),
     ]
@@ -271,6 +281,19 @@ def benchmark_solution(
         t = parse_timing_output(stdout)
         if t is not None:
             result.e2e_time_ms = TimingStats(mean=t, std=0.0, min=t, max=t, num_trials=1)
+
+    # === A2: fresh-process validation (audit hardening) ===
+    # output.txt is produced by a SINGLE cold call in a NEW process. A solution
+    # whose output is only correct because of state accumulated across the warm
+    # calls (cross-call convergence, deferred-correctness caching) fails here,
+    # while every self-contained solution is unaffected.
+    ok_v, _stdout_v, stderr_v = _run_exe(
+        exe_path,
+        args=[data_dir, "--validate", "--warmup", "0", "--trials", "0"],
+        device_id=device_id, timeout=timeout_to_use,
+    )
+    if not ok_v:
+        result.error += f"Fresh-process validation failed: {stderr_v[:200]}. "
 
     # === CPU baseline ===
     result.cpu_baseline_ms = run_cpu_baseline(task_id, data_dir=data_dir)

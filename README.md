@@ -81,9 +81,45 @@ returning. `solution_compute` is called with three warmups and five timed
 trials; the **full wall time of every call is measured via CUDA Events**, so
 allocation cost cannot be hidden in an untimed `init()` phase.
 
-An automated audit (`solution_compute` is called repeatedly with cleared
-device state) detects timing-loophole exploits such as static device
-pointers that survive across calls.
+A dedicated timing-audit layer (next section) verifies that every timed call
+is self-contained — no allocation or compute smuggled into untimed warmup.
+
+## Timing audit
+
+The benchmark's contract is that **every `solution_compute` call carries its
+own full cost**. The audit enforces and verifies this with independent layers,
+and reports per solution exactly which check failed:
+
+- **Per-call transparency (S0).** The harness times every call individually —
+  warmup included — and archives all of them in `timing.json`
+  (`warmup_ms[]` + `trial_ms[]`). Cost hidden in an early call is visible as
+  asymmetry in the archived series; used as a screen, never to convict.
+- **Reset-and-revalidate (S1).** `--audit-rounds N` wipes device state
+  (`cudaDeviceReset`) between extra rounds, rebuilds the context untimed, and
+  re-validates the output each round. A solution that caches device pointers
+  or results across calls dereferences dangling state — CUDA error or output
+  mismatch. Deterministic; no threshold involved.
+- **Cold/warm ratio (S2).** K fresh-process single-call runs
+  (`--warmup 0 --trials 1`, context pre-created, `CUDA_MODULE_LOADING=EAGER`)
+  measure a zero-prior-call invocation. Compliant solutions allocate inside
+  every call, so cold ≈ warm (median ratio ≈ 1.0–1.1 in practice); a solution
+  whose timed calls skip work done in earlier calls shows cold ≫ warm and is
+  flagged for source inspection.
+- **Cold-process validation.** `output.txt` is produced by a single cold call
+  in a fresh process, so correctness can never rely on state accumulated
+  across the warm calls.
+
+```bash
+python3 run.py audit --run <run_dir> --sizes medium
+# → per-sample verdict + audit_results_<ts>.json
+#   (violations / provisional / advisories, with the violated check named)
+```
+
+Deliberately non-compliant reference solutions (static-pointer caching,
+host-side result caching, deferred correctness) live in
+[`tests/audit_controls/`](tests/audit_controls/) together with the expected
+verdict for each; the compliant baseline passes all layers with warmup
+semantics unchanged.
 
 ## Prompt levels
 
@@ -102,7 +138,8 @@ Prompts assemble from `tasks/<id>/prompt_template.yaml` via
 AccelEval/
 ├── run.py                  # CLI entry-point (single model / single task)
 ├── framework/
-│   ├── benchmark.py        # CUDA-Event end-to-end timing
+│   ├── benchmark.py        # CUDA-Event end-to-end timing + cold-process validation
+│   ├── audit.py            # Timing audit: S1 reset-revalidate, S2 cold/warm ratio
 │   ├── compile.py          # nvcc compile (auto-injects weak solution_free)
 │   ├── validate.py         # Output comparison (per-task tolerance)
 │   ├── generate.py         # LLM dispatcher
@@ -130,6 +167,8 @@ AccelEval/
 │   ├── compute_passk.py            # pass@k aggregates from a single k-sample run
 │   ├── plot_pattern_cooccurrence.py / plot_scale_*.py
 │   └── run_human_baselines.sh
+├── tests/
+│   └── audit_controls/     # Planted-cheat + compliant solutions validating the audit
 ├── docs/                   # REPRODUCE.md, task_porting_guide.md
 └── runs/                   # Generated solutions + eval results (gitignored)
 ```
@@ -139,6 +178,9 @@ AccelEval/
 ```bash
 # Eval already-generated .cu files against a fresh data download (no API calls)
 python3 run.py eval --run runs/<model>_<config>_<date> --sizes medium
+
+# Timing audit of the passing solutions (names the violated check per sample)
+python3 run.py audit --run runs/<model>_<config>_<date> --sizes medium
 
 # Cross-model summary
 python3 scripts/consolidate_eval_data.py

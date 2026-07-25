@@ -6,6 +6,13 @@
 #define NUM_TRIALS 10
 #define SYNC()     ((void)0)
 
+// CPU counterparts of the GPU audit macros (all no-ops: there is no device
+// state to wipe and no CUDA error state to probe).
+#define RESET_DEVICE_STATE() ((void)0)
+#define CTX_PREINIT()        ((void)0)
+static const char* audit_check_err(void) { return (const char*)0; }
+#define AUDIT_CHECK_ERR() audit_check_err()
+
 static struct timespec _ts0, _ts1;
 #define TIMER_START()      clock_gettime(CLOCK_MONOTONIC, &_ts0)
 #define TIMER_STOP()       clock_gettime(CLOCK_MONOTONIC, &_ts1)
